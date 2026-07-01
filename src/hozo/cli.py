@@ -25,6 +25,7 @@ from .profiles import Bind, available_profiles
 
 _VERBS = ("run", "explain", "profile")
 _VALUE_OPTS = {"--project": "project", "--network": "network"}
+_BOOL_FLAGS = {"--no-base": "no_base", "--override": "override"}
 
 _USAGE = """\
 hozo — run tools in composable bubblewrap sandboxes
@@ -38,8 +39,22 @@ Flags: --project PATH  --network none|proxy|host  --no-base  --override
 """
 
 
+class _UsageError(Exception):
+    """Stop parsing and exit: with a message it's an error on stderr; without one it prints
+    help. ``code`` is the process exit status (2 for errors, 0 for --help)."""
+
+    def __init__(self, code: int, message: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 def _csv(tok: str) -> list[str]:
     return [item for item in tok.split("=", 1)[1].split(",") if item]
+
+
+def _is_profile(tok: str) -> bool:
+    return tok.startswith("+") and len(tok) > 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,14 +63,35 @@ def main(argv: list[str] | None = None) -> int:
         print(_USAGE)
         return 0
 
+    # TODO: maybe argparse or click would be better
     command: list[str] = []
     if "--" in argv:
         idx = argv.index("--")
         argv, command = argv[:idx], argv[idx + 1 :]
+    profiles = [tok[1:] for tok in argv if _is_profile(tok)]
+    tokens = [tok for tok in argv if not _is_profile(tok)]
 
-    profiles = [tok[1:] for tok in argv if tok.startswith("+") and len(tok) > 1]
-    tokens = [tok for tok in argv if not (tok.startswith("+") and len(tok) > 1)]
+    try:
+        opts, positional = _parse_flags(tokens)
+        verb = positional.pop(0) if positional and positional[0] in _VERBS else "run"
+        if verb == "profile":
+            return _cmd_profile(positional)
+        if not command:
+            raise _UsageError(2, f"'{verb}' needs a command after '--'")
+        return _cmd_run(profiles, command, opts, explain_only=(verb == "explain"))
+    except _UsageError as exc:
+        if exc.message:
+            print(f"hozo: {exc.message}", file=sys.stderr)
+        else:
+            print(_USAGE)
+        return exc.code
+    except HozoError as exc:
+        print(f"hozo: {exc}", file=sys.stderr)
+        return 1
 
+
+def _parse_flags(tokens: list[str]) -> tuple[dict, list[str]]:
+    """Split remaining tokens into (opts, positionals). Raises ``_UsageError`` on a bad flag."""
     opts = {
         "project": None,
         "network": None,
@@ -68,12 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     positional: list[str] = []
     walker = iter(tokens)
     for tok in walker:
-        if tok in _VALUE_OPTS:
+        if tok in ("-h", "--help"):
+            raise _UsageError(0)
+        elif tok in _VALUE_OPTS:
             value = next(walker, None)
             if value is None or value.startswith("-"):
-                print(f"hozo: option {tok} needs a value", file=sys.stderr)
-                return 2
+                raise _UsageError(2, f"option {tok} needs a value")
             opts[_VALUE_OPTS[tok]] = value
+        elif tok in _BOOL_FLAGS:
+            opts[_BOOL_FLAGS[tok]] = True
         elif tok == "--allow-net":  # bare = full host network
             opts["network"] = "host"
         elif tok.startswith("--allow-net="):  # specific hosts -> proxy allowlist
@@ -84,35 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         elif tok.startswith("--allow-write="):
             opts["allow_write"] += _csv(tok)
         elif tok in ("--allow-read", "--allow-write"):
-            print(f"hozo: {tok} needs paths, e.g. {tok}=/path/a,/path/b", file=sys.stderr)
-            return 2
-        elif tok == "--no-base":
-            opts["no_base"] = True
-        elif tok == "--override":
-            opts["override"] = True
-        elif tok in ("-h", "--help"):
-            print(_USAGE)
-            return 0
+            raise _UsageError(2, f"{tok} needs paths, e.g. {tok}=/path/a,/path/b")
         elif tok.startswith("-"):
-            print(f"hozo: unknown option {tok!r}", file=sys.stderr)
-            return 2
+            raise _UsageError(2, f"unknown option {tok!r}")
         else:
             positional.append(tok)
-
-    verb = "run"
-    if positional and positional[0] in _VERBS:
-        verb = positional.pop(0)
-
-    try:
-        if verb == "profile":
-            return _cmd_profile(positional)
-        if not command:
-            print(f"hozo: '{verb}' needs a command after '--'", file=sys.stderr)
-            return 2
-        return _cmd_run(profiles, command, opts, explain_only=(verb == "explain"))
-    except HozoError as exc:
-        print(f"hozo: {exc}", file=sys.stderr)
-        return 1
+    return opts, positional
 
 
 def _build_request(profiles: list[str], command: list[str], opts: dict) -> SandboxRequest:
@@ -143,8 +159,7 @@ def _cmd_profile(args: list[str]) -> int:
         for name, origin in sorted(available_profiles().items()):
             print(f"{name:20} {origin}")
         return 0
-    print("hozo: usage: hozo profile list", file=sys.stderr)
-    return 2
+    raise _UsageError(2, "usage: hozo profile list")
 
 
 if __name__ == "__main__":
