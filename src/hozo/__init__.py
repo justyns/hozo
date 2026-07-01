@@ -4,6 +4,8 @@ A Python library with a thin CLI on top; import the public names below directly 
 ``hozo``. ``SandboxRunner.run`` is the only part with side effects.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .backend import Backend, SandboxResult, get_backend
 from .bwrap import BubblewrapBackend, build_bwrap_argv, check_available
 from .errors import HozoError, MergeConflictError, ProfileError
@@ -18,7 +20,10 @@ def run(request, **kwargs) -> SandboxResult:
     return SandboxRunner().run(request, **kwargs)
 
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("hozo")
+except PackageNotFoundError:  # running from a source tree that isn't installed
+    __version__ = "0.0.0"
 
 __all__ = [
     "Bind",
