@@ -1,4 +1,3 @@
-import getpass
 import os
 
 from hozo import bwrap
@@ -56,7 +55,7 @@ def test_sandbox_env_scrubs_secrets_keeps_allowed(tmp_path):
     env = bwrap.build_sandbox_env(policy, environ={"ANTHROPIC_API_KEY": "sekret", "TERM": "xterm"})
     assert "ANTHROPIC_API_KEY" not in env  # not in the allowlist -> never copied
     assert env["TERM"] == "xterm"
-    assert env["HOME"] == f"/home/{getpass.getuser()}"
+    assert env["HOME"] == os.path.expanduser("~")
 
 
 def test_check_available_returns_bool():

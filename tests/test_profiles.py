@@ -9,7 +9,7 @@ def test_load_builtin_base():
     p = profiles.load_profile("base")
     assert p.name == "base"
     assert p.clear_env is True
-    assert p.home == "/home/{user}"
+    assert p.home == "{home}"
     assert "LC_*" in p.env_allow  # small allowlist; no deny list needed
     assert p.network_mode is None  # base intentionally leaves network unset
 

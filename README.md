@@ -83,7 +83,7 @@ The sandbox home is wiped each run. To persist a tool's login/config, bind a hos
 # ~/.config/hozo/profiles/claude-home.yaml
 name: claude-home
 binds:
-  - { source: "~/.hozo/claude", target: /home/{user}, mode: rw }
+  - { source: "~/.hozo/claude", target: "{home}", mode: rw }
 ```
 
 ## Development

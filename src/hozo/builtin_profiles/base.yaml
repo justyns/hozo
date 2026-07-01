@@ -11,8 +11,9 @@ process:
   clear_env: true
   cwd: /work
 
-# Default to a home directory matching the user's home, but technically an empty dir by default in the sandbox
-home: /home/{user}
+# Default $HOME to the real home path (an empty dir in the sandbox), so it works even
+# when home isn't /home/<user> (e.g. /root, /Users/...). Contents aren't exposed.
+home: "{home}"
 
 env:
   set:

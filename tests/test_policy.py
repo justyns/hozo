@@ -1,4 +1,4 @@
-import getpass
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +23,7 @@ def test_base_only(tmp_path):
     p = policy.resolve_policy(SandboxRequest(command=["echo", "hi"], project=str(tmp_path)))
     assert p.network_mode == "none"
     assert p.clear_env is True
-    assert p.home == f"/home/{getpass.getuser()}"
+    assert p.home == str(Path.home())
     assert "LC_*" in p.env_allow  # deny-all + small allowlist scrubs secrets
     assert p.command == ["echo", "hi"]
     work = [b for b in p.binds if b.target == "/work"]
