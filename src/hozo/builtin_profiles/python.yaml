@@ -1,0 +1,20 @@
+name: python
+description: >-
+  uv/pip caches writable + PyPI on the proxy allowlist. Leaves the network mode
+  unset; pair with +proxy for installs (`hozo +python +proxy -- uv pip install ...`),
+  or run without +proxy for offline use.
+
+binds:
+  - source: "~/.cache/uv"
+    target: /home/{user}/.cache/uv
+    mode: rw
+    optional: true
+  - source: "~/.cache/pip"
+    target: /home/{user}/.cache/pip
+    mode: rw
+    optional: true
+
+proxy:
+  allow_hosts:
+    - pypi.org
+    - files.pythonhosted.org

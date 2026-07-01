@@ -1,0 +1,44 @@
+name: base
+description: >-
+  Foundation layer applied to every run: the default read-only system mounts, a private
+  throwaway home, the /work working dir, and the scrubbed environment. (Merged-/usr symlinks
+  and /proc, /dev, tmpfs /tmp are host-specific, so the renderer still adds those.)
+
+# No network.mode here by default, so should be none by default
+
+process:
+  # Remove all environment variables except for the allowlist below
+  clear_env: true
+  cwd: /work
+
+# Default to a home directory matching the user's home, but technically an empty dir by default in the sandbox
+home: /home/{user}
+
+env:
+  set:
+    PATH: /usr/bin:/bin
+  allow:
+    - TERM
+    - COLORTERM
+    - LANG
+    - "LC_*"
+    - TZ
+
+binds:
+  - { source: /usr, target: /usr, mode: ro }
+  - { source: /etc/ssl, target: /etc/ssl, mode: ro, optional: true }
+  - { source: /etc/ca-certificates, target: /etc/ca-certificates, mode: ro, optional: true }
+  - { source: /etc/pki, target: /etc/pki, mode: ro, optional: true }
+  - { source: /etc/passwd, target: /etc/passwd, mode: ro, optional: true }
+  - { source: /etc/group, target: /etc/group, mode: ro, optional: true }
+  - { source: /etc/hosts, target: /etc/hosts, mode: ro, optional: true }
+  - { source: /etc/nsswitch.conf, target: /etc/nsswitch.conf, mode: ro, optional: true }
+  - { source: /etc/localtime, target: /etc/localtime, mode: ro, optional: true }
+  - { source: /etc/resolv.conf, target: /etc/resolv.conf, mode: ro, optional: true }
+
+special:
+  proc: true
+  dev: true
+
+tmpfs:
+  - /tmp

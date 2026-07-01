@@ -1,0 +1,33 @@
+name: claude
+description: >-
+  Run your host-installed Claude Code inside the sandbox with its login, sessions, and
+  memory intact. Uses your real home path and mounts the project in place, so paths match
+  the host. Binds ~/.claude + ~/.claude.json.
+  Egress is limited to Anthropic.
+
+process:
+  cwd: "{project}"
+
+home: "{home}"
+
+network:
+  mode: proxy
+
+env:
+  prepend_path:
+    - "{home}/.local/bin"
+
+binds:
+  # The host claude binary. The native installer symlinks ~/.local/bin/claude into
+  # ~/.local/share/claude/versions/, so both must be bound for the symlink to resolve. (A
+  # global npm install whose prefix is /usr is already on PATH via the /usr bind.)
+  - { source: "{home}/.local/bin", target: "{home}/.local/bin", mode: ro, optional: true }
+  - { source: "{home}/.local/share/claude", target: "{home}/.local/share/claude", mode: ro, optional: true }
+  # Claude's config, auth, sessions, and memory.
+  - { source: "{home}/.claude", target: "{home}/.claude", mode: rw, optional: true }
+  - { source: "{home}/.claude.json", target: "{home}/.claude.json", mode: rw, optional: true }
+
+proxy:
+  allow_hosts:
+    - api.anthropic.com
+    - statsig.anthropic.com

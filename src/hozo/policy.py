@@ -1,0 +1,202 @@
+"""Resolve a SandboxRequest into a ResolvedPolicy
+
+Merge order: implicit ``base`` -> named profiles (in CLI order) -> request inline
+overrides (highest priority). Binds and env ``set`` raise ``MergeConflictError`` on
+conflicting values (unless ``request.override``); scalar singletons (home, cwd) take
+the last layer's value and network takes the most-restrictive. Inline request
+fields always win.
+"""
+
+from __future__ import annotations
+
+import getpass
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .errors import HozoError, MergeConflictError
+from .paths import expand_path
+from .profiles import NETWORK_MODES, Bind, Profile, load_profile
+from .proxy import valid_port_spec
+
+_NETWORK_RANK = {mode: rank for rank, mode in enumerate(NETWORK_MODES)}  # smaller = more restrictive
+
+
+@dataclass
+class SandboxRequest:
+    command: list[str] = field(default_factory=list)
+    project: str | None = None
+    profiles: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    network: str | None = None
+    allow_hosts: list[str] = field(default_factory=list)
+    binds: list[Bind] = field(default_factory=list)
+    bind_project: bool = True
+    no_base: bool = False
+    override: bool = False
+
+
+@dataclass
+class ResolvedPolicy:
+    command: list[str]
+    profiles_applied: list[str]
+    network_mode: str
+    clear_env: bool
+    cwd: str
+    home: str | None
+    binds: list[Bind]
+    tmpfs: list[str]
+    env_allow: list[str]
+    env_set: dict[str, str]
+    prepend_path: list[str]
+    proc: bool
+    dev: bool
+    proxy_allow_hosts: list[str]
+
+
+def _union(into: list[str], more: list[str]) -> None:
+    for item in more:
+        if item not in into:
+            into.append(item)
+
+
+def _absolute(value: str, label: str) -> str:
+    if not value.startswith("/"):
+        raise HozoError(f"{label} must resolve to an absolute path: {value!r}")
+    return value
+
+
+def _expand_bind(bind: Bind, project: str) -> Bind:
+    source = expand_path(bind.source, project=Path(project))
+    target = expand_path(bind.target, project=Path(project))
+    for label, value in (("source", source), ("target", target)):
+        _absolute(value, f"bind {label}")
+    return Bind(source=source, target=target, mode=bind.mode, optional=bind.optional)
+
+
+def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
+    for i, existing in enumerate(binds):
+        if existing.target != bind.target:
+            continue
+        if existing.source == bind.source and existing.mode == bind.mode:
+            # same mount from two layers; a required bind wins over an optional one
+            existing.optional = existing.optional and bind.optional
+            return
+        if override:
+            binds[i] = bind
+            return
+        raise MergeConflictError(
+            f"bind target {bind.target!r} requested by two layers with different source/mode: "
+            f"{existing.source!r}({existing.mode}) vs {bind.source!r}({bind.mode})"
+        )
+    binds.append(bind)
+
+
+def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> ResolvedPolicy:
+    policy = ResolvedPolicy(
+        command=[],
+        profiles_applied=[layer.name for layer in layers],
+        network_mode="none",
+        clear_env=True,  # secure default; a layer can opt out with clear_env: false
+        cwd="/work",
+        home=None,
+        binds=[],
+        tmpfs=[],
+        env_allow=[],
+        env_set={},
+        prepend_path=[],
+        proc=False,
+        dev=False,
+        proxy_allow_hosts=[],
+    )
+    explicit_modes: list[str] = []
+    for layer in layers:
+        _union(policy.env_allow, layer.env_allow)
+        for key, value in layer.env_set.items():
+            if key in policy.env_set and policy.env_set[key] != value and not override:
+                raise MergeConflictError(f"env {key!r} set to conflicting values: {policy.env_set[key]!r} vs {value!r}")
+            policy.env_set[key] = value
+        policy.prepend_path += layer.prepend_path
+        _union(policy.tmpfs, layer.tmpfs)
+        for bind in layer.binds:
+            _add_bind(policy.binds, _expand_bind(bind, project), override=override)
+        _union(policy.proxy_allow_hosts, layer.proxy_allow_hosts)
+        policy.proc = policy.proc or layer.proc
+        policy.dev = policy.dev or layer.dev
+        if layer.clear_env is not None:
+            policy.clear_env = layer.clear_env
+        if layer.cwd:
+            policy.cwd = layer.cwd
+        if layer.home:
+            policy.home = layer.home
+        if layer.network_mode:
+            explicit_modes.append(layer.network_mode)
+
+    if explicit_modes:
+        policy.network_mode = min(explicit_modes, key=_NETWORK_RANK.__getitem__)
+    return policy
+
+
+def _apply_xdg_defaults(policy: ResolvedPolicy) -> None:
+    """Point XDG dirs at the (writable) sandbox home so cache binds line up. A profile
+    that sets them explicitly wins. Lives here so ``explain`` reports them truthfully."""
+    if not policy.home:
+        return
+    for var, sub in (
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_CACHE_HOME", ".cache"),
+        ("XDG_DATA_HOME", ".local/share"),
+        ("XDG_STATE_HOME", ".local/state"),
+    ):
+        policy.env_set.setdefault(var, f"{policy.home}/{sub}")
+
+
+def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
+    # Absolutize so a relative --project (e.g. '..') resolves predictably before it
+    # becomes a bind source.
+    project = os.path.abspath(request.project or os.getcwd())
+
+    layers: list[Profile] = []
+    if not request.no_base:
+        layers.append(load_profile("base"))
+    for name in request.profiles:
+        layers.append(load_profile(name))
+
+    policy = _merge_layers(layers, project=project, override=request.override)
+
+    # Expand placeholders ({project}, {home}, ~, ...) in the working dir, home, and PATH.
+    proj = Path(project)
+    policy.cwd = _absolute(expand_path(policy.cwd, project=proj), "working dir")
+    if policy.home:
+        policy.home = _absolute(expand_path(policy.home, project=proj), "home")
+    policy.prepend_path = [expand_path(p, project=proj) for p in policy.prepend_path]
+
+    # The project is mounted read-write at the working dir (default /work; a profile can set
+    # cwd: "{project}" to mount it in place at its real host path — e.g. for path-keyed tools).
+    if request.bind_project:
+        _add_bind(policy.binds, Bind(source=project, target=policy.cwd, mode="rw"), override=True)
+
+    # Inline request fields win unconditionally over profiles.
+    policy.env_set.update(request.env)
+    if request.network is not None:
+        if request.network not in _NETWORK_RANK:
+            raise HozoError(f"invalid network mode: {request.network!r}")
+        policy.network_mode = request.network
+    for host in request.allow_hosts:
+        if not valid_port_spec(host):
+            raise HozoError(f"invalid port in allow_hosts: {host!r}")
+    _union(policy.proxy_allow_hosts, request.allow_hosts)
+    for bind in request.binds:
+        _add_bind(policy.binds, _expand_bind(bind, project), override=True)
+
+    # Identity: HOME follows the sandbox home; USER/LOGNAME default to the real user.
+    if policy.home:
+        policy.env_set.setdefault("HOME", policy.home)
+    user = getpass.getuser()
+    policy.env_set.setdefault("USER", user)
+    policy.env_set.setdefault("LOGNAME", user)
+
+    _apply_xdg_defaults(policy)
+
+    policy.command = list(request.command)
+    return policy
