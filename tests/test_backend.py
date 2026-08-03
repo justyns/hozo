@@ -44,3 +44,23 @@ def test_runner_delegates_to_injected_backend(tmp_path):
     result = hozo.SandboxRunner(backend).run(SandboxRequest(command=["true"], project=str(tmp_path)))
     assert result.returncode == 0 and result.backend == "stub"
     assert backend.ran is not None
+
+
+def test_get_backend_detects_darwin(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    assert isinstance(get_backend(), hozo.SeatbeltBackend)
+
+
+def test_get_backend_detects_linux(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    assert isinstance(get_backend(), BubblewrapBackend)
+
+
+def test_get_backend_unsupported_platform_errors(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    with pytest.raises(HozoError):
+        get_backend()
+
+
+def test_get_seatbelt_backend_explicit():
+    assert isinstance(get_backend("seatbelt"), hozo.SeatbeltBackend)

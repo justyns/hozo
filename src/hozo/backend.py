@@ -42,9 +42,20 @@ class Backend(ABC):
         """Execute the policy and return the result."""
 
 
-def get_backend(name: str = "bwrap") -> Backend:
+def get_backend(name: str | None = None) -> Backend:
+    if name is None:
+        import platform
+
+        system = platform.system()
+        name = {"Linux": "bwrap", "Darwin": "seatbelt"}.get(system)
+        if name is None:
+            raise HozoError(f"unsupported platform {system!r}; hozo supports Linux (bwrap) and macOS (seatbelt)")
     if name == "bwrap":
         from .bwrap import BubblewrapBackend
 
         return BubblewrapBackend()
-    raise HozoError(f"unknown backend {name!r}; available: bwrap")
+    if name == "seatbelt":
+        from .seatbelt import SeatbeltBackend
+
+        return SeatbeltBackend()
+    raise HozoError(f"unknown backend {name!r}; available: bwrap, seatbelt")

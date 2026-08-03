@@ -13,6 +13,7 @@ from .executor import SandboxRunner
 from .explain import explain_policy
 from .policy import ResolvedPolicy, SandboxRequest, resolve_policy
 from .profiles import Bind
+from .seatbelt import SeatbeltBackend, build_seatbelt_profile
 
 
 def run(request, **kwargs) -> SandboxResult:
@@ -33,9 +34,11 @@ __all__ = [
     "SandboxRunner",
     "Backend",
     "BubblewrapBackend",
+    "SeatbeltBackend",
     "get_backend",
     "resolve_policy",
     "build_bwrap_argv",
+    "build_seatbelt_profile",
     "explain_policy",
     "check_available",
     "run",

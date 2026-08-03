@@ -1,0 +1,27 @@
+name: base-macos
+description: >-
+  macOS foundation layer applied to every run (auto-selected on Darwin in place of `base`).
+  The Seatbelt renderer supplies the system essentials — the dyld shared cache, /usr/lib,
+  system frameworks, and core mach services — so this layer only sets the scrubbed
+  environment, the in-place project working dir, and the real (deny-by-default) home. Unlike
+  Linux there are no /etc/* or /usr binds here: those paths are granted by the renderer, and
+  certificates are validated through the system keychain (trustd), not files.
+
+process:
+  # Remove all environment variables except for the allowlist below
+  clear_env: true
+  cwd: "{project}"
+
+# HOME stays the real path; nothing under it is reachable unless a profile binds it
+# explicitly (e.g. +claude binds ~/.claude), so host secrets stay out of the sandbox.
+home: "{home}"
+
+env:
+  set:
+    PATH: /usr/bin:/bin:/usr/sbin:/sbin
+  allow:
+    - TERM
+    - COLORTERM
+    - LANG
+    - "LC_*"
+    - TZ

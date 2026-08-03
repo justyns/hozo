@@ -28,7 +28,7 @@ _VALUE_OPTS = {"--project": "project", "--network": "network"}
 _BOOL_FLAGS = {"--no-base": "no_base", "--override": "override"}
 
 _USAGE = """\
-hozo — run tools in composable bubblewrap sandboxes
+hozo — run tools in composable sandboxes
 
   hozo +profile [+profile ...] -- COMMAND [ARGS...]
   hozo explain +profile ... -- COMMAND

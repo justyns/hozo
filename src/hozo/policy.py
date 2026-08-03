@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .errors import HozoError, MergeConflictError
 from .paths import expand_path
-from .profiles import NETWORK_MODES, Bind, Profile, load_profile
+from .profiles import NETWORK_MODES, Bind, Profile, default_base_name, load_profile
 from .proxy import valid_port_spec
 
 _NETWORK_RANK = {mode: rank for rank, mode in enumerate(NETWORK_MODES)}  # smaller = more restrictive
@@ -155,7 +155,7 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
 
     layers: list[Profile] = []
     if not request.no_base:
-        layers.append(load_profile("base"))
+        layers.append(load_profile(default_base_name()))
     for name in request.profiles:
         layers.append(load_profile(name))
 

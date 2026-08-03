@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import importlib.resources as resources
+import platform
 from dataclasses import dataclass, field
 
 import yaml
@@ -154,6 +155,11 @@ def _builtin_dir():
 
 def builtin_names() -> list[str]:
     return sorted(entry.name[:-5] for entry in _builtin_dir().iterdir() if entry.name.endswith(".yaml"))
+
+
+def default_base_name() -> str:
+    """The implicit base profile for this platform: macOS needs a different system-path set."""
+    return "base-macos" if platform.system() == "Darwin" else "base"
 
 
 def available_profiles() -> dict[str, str]:

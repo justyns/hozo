@@ -1,15 +1,15 @@
 # Hozo
 
-Simple wrapper around [`bubblewrap`](https://github.com/containers/bubblewrap)  that provides composable profiles for sandboxing.
+Simple wrapper around [`bubblewrap`](https://github.com/containers/bubblewrap) (Linux) and [`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html) / Seatbelt (macOS) that provides composable profiles for sandboxing. The backend is chosen automatically by platform; the CLI and profiles are the same on both.
 
 Read/write/network access are all deny by default except for a minimal set of directories.
 
-**Note**:  Hozo uses bubblewrap and is still subject to its limitations.  It's not a full isolation solution, but it does make it easier to run untrusted code with a sane default policy and a few composable profiles.  This won't protect you against entirely malicious code or kernel exploits, but will help avoid accidentally leaking secrets/files, and also reduce the blast radius of a misbehaving tool.
+**Note**:  Hozo is not a full isolation solution, but it does make it easier to run untrusted code with a sane default policy and a few composable profiles.  This won't protect you against entirely malicious code or kernel exploits, but will help avoid accidentally leaking secrets/files, and also reduce the blast radius of a misbehaving tool.  On Linux it uses bubblewrap (kernel namespaces); on macOS it uses Seatbelt, which filters filesystem/network access but does **not** isolate processes (no separate PID namespace), so isolation there is weaker.
 
 ## Requirements
 
-- Linux with `bubblewrap` (`bwrap`). Other OSes are not supported.
-- Python ≥ 3.11. Proxy mode also needs `python3` inside the sandbox.
+- Linux with `bubblewrap` (`bwrap`), or macOS with `sandbox-exec` (ships with macOS).
+- Python ≥ 3.11. On Linux, proxy mode also needs `python3` inside the sandbox (for the egress bridge); macOS needs nothing extra.
 
 ## Install
 
@@ -23,7 +23,7 @@ hozo --help
 ```bash
 hozo +untrusted -- make test          # no network, no secrets, cwd writable
 hozo +untrusted -- bash               # sandboxed shell
-hozo explain +untrusted -- echo hi    # shows what bwrap args would be used
+hozo explain +untrusted -- echo hi    # shows the resolved policy (bwrap args / SBPL profile)
 hozo +node +proxy -- npm install      # network limited to the npm registry
 hozo --allow-net=pypi.org -- pip install requests   # grant just this host
 hozo --allow-read=/etc/hosts +untrusted -- cat /etc/hosts
@@ -77,13 +77,13 @@ To launch a tool sandboxed without typing the full command each time, use a shel
 alias claude='hozo +claude -- claude'
 ```
 
-The sandbox home is wiped each run. To persist a tool's login/config, bind a host dir over the sandbox home in a profile:
+A tool starts with a clean home: `$HOME` keeps its real path, but nothing under it is visible unless a profile binds it explicitly. To persist a tool's login/config, bind its config dir read-write in a profile — it's made available at the same path inside the sandbox:
 
 ```yaml
-# ~/.config/hozo/profiles/claude-home.yaml
-name: claude-home
+# ~/.config/hozo/profiles/mytool.yaml
+name: mytool
 binds:
-  - { source: "~/.hozo/claude", target: "{home}", mode: rw }
+  - { source: "~/.config/mytool", mode: rw, optional: true }
 ```
 
 ## Development

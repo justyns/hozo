@@ -96,6 +96,34 @@ def test_proxy_allows_listed_ip(tmp_path):
     asyncio.run(main())
 
 
+def test_proxy_tcp_loopback_mode():
+    # macOS uses a TCP loopback listener instead of a Unix socket (no in-sandbox bridge).
+    async def main():
+        async def echo(reader, writer):
+            await reader.read(64)
+            writer.write(b"ok")
+            await writer.drain()
+            writer.close()
+
+        upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
+        uport = upstream.sockets[0].getsockname()[1]
+        prox = proxy.ConnectProxy(allowed_hosts=[f"localhost:{uport}"], tcp_port=0)
+        await prox.start()
+        try:
+            assert isinstance(prox.port, int) and prox.port > 0  # ephemeral port exposed
+            reader, writer = await asyncio.open_connection("127.0.0.1", prox.port)
+            writer.write(f"CONNECT localhost:{uport} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            await writer.drain()
+            status = await reader.readline()
+            writer.close()
+            assert b"200" in status
+        finally:
+            await prox.stop()
+            upstream.close()
+
+    asyncio.run(main())
+
+
 @pytest.mark.skipif(not hozo.check_available(), reason="bwrap not installed")
 def test_proxy_mode_end_to_end(tmp_path):
     # Full lifecycle: temp socket + bridge written, proxy started, sandbox runs the
