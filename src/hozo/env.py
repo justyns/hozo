@@ -1,13 +1,17 @@
 """Build the sandbox environment as an explicit dict
 
 Start from the host env filtered by the allow globs (or everything, when ``clear_env`` is
-false), apply explicit ``set`` values, then prepend to PATH.
+false), apply explicit ``set`` values, point HTTP(S)_PROXY at the egress proxy when there
+is one, then prepend to PATH. Backends hand the result to the child as its process
+environment, so values never land in a world-readable cmdline.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import os
+
+from .proxy import proxy_env
 
 
 def _matches(name: str, patterns: list[str]) -> bool:
@@ -23,7 +27,9 @@ def _build_path(prepend: list[str], base: str) -> str:
     return ":".join(dirs)
 
 
-def build_env(policy, environ: dict[str, str] | None = None) -> dict[str, str]:
+def build_env(policy, environ: dict[str, str] | None = None, *, proxy_port: int | None = None) -> dict[str, str]:
+    """``proxy_port`` (when set) is the loopback port the sandbox reaches the egress proxy
+    on; it adds the HTTP(S)_PROXY vars, which win over a profile's own ``env.set``."""
     environ = os.environ if environ is None else environ
 
     env: dict[str, str] = {}
@@ -32,6 +38,8 @@ def build_env(policy, environ: dict[str, str] | None = None) -> dict[str, str]:
             env[key] = value
 
     env.update(policy.env_set)
+    if proxy_port is not None:
+        env.update(proxy_env(proxy_port))
 
     new_path = _build_path(policy.prepend_path, env.get("PATH", ""))
     if new_path:

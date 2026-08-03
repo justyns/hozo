@@ -1,6 +1,7 @@
 import os
 
 from hozo import bwrap
+from hozo.env import build_env
 from hozo.policy import SandboxRequest, resolve_policy
 from hozo.proxy import ProxyMount
 
@@ -52,7 +53,7 @@ def test_no_env_flags_in_argv(tmp_path):
 
 def test_sandbox_env_scrubs_secrets_keeps_allowed(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    env = bwrap.build_sandbox_env(policy, environ={"ANTHROPIC_API_KEY": "sekret", "TERM": "xterm"})
+    env = build_env(policy, environ={"ANTHROPIC_API_KEY": "sekret", "TERM": "xterm"})
     assert "ANTHROPIC_API_KEY" not in env  # not in the allowlist -> never copied
     assert env["TERM"] == "xterm"
     assert env["HOME"] == os.path.expanduser("~")
@@ -74,7 +75,7 @@ def test_proxy_mode_renders_bridge_binds_and_wrapper(tmp_path):
 
 def test_proxy_env_has_http_proxy(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), profiles=["proxy"]))
-    env = bwrap.build_sandbox_env(policy, proxy=True)
+    env = build_env(policy, environ={}, proxy_port=12345)
     assert env["HTTP_PROXY"] == "http://127.0.0.1:12345"
 
 

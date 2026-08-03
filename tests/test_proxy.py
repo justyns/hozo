@@ -107,7 +107,7 @@ def test_proxy_tcp_loopback_mode():
 
         upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
         uport = upstream.sockets[0].getsockname()[1]
-        prox = proxy.ConnectProxy(allowed_hosts=[f"localhost:{uport}"], tcp_port=0)
+        prox = proxy.ConnectProxy(0, allowed_hosts=[f"localhost:{uport}"])
         await prox.start()
         try:
             assert isinstance(prox.port, int) and prox.port > 0  # ephemeral port exposed

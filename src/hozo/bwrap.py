@@ -1,11 +1,10 @@
 """The bubblewrap backend: render a ResolvedPolicy into a ``bwrap`` argv and run it.
 
 ``build_bwrap_argv`` is the pure renderer; ``BubblewrapBackend`` executes it (and manages
-the egress proxy for proxy mode). The env is built by ``build_sandbox_env`` and handed to
-bwrap as its process environment rather than via ``--setenv``, so env values never land in
-the world-readable ``/proc/PID/cmdline``. The system mounts (/usr, certs, /etc/*) are
-ordinary ``base`` binds; only the host-specific merged-/usr symlinks and ``--proc``/``--dev``
-stay here.
+the egress proxy for proxy mode). The env is handed to bwrap as its process environment
+rather than via ``--setenv``, so env values never land in the world-readable
+``/proc/PID/cmdline``. The system mounts (/usr, certs, /etc/*) are ordinary ``base`` binds;
+only the host-specific merged-/usr symlinks and ``--proc``/``--dev`` stay here.
 """
 
 from __future__ import annotations
@@ -15,8 +14,8 @@ import logging
 import os
 import shlex
 import shutil
-import subprocess
 import tempfile
+from contextlib import ExitStack, contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -36,6 +35,9 @@ from .proxy import (
 
 # Top-level dirs that are symlinks into /usr on merged-/usr distros (Arch/EndeavourOS).
 _MERGED_USR_LINKS = ("/bin", "/sbin", "/lib", "/lib64")
+
+# Stand-in paths for `explain`: the real socket and script are per-run temporaries.
+_EXPLAIN_MOUNT = ProxyMount("<host-proxy.sock>", "<bridge.py>")
 
 
 def check_available() -> bool:
@@ -78,36 +80,14 @@ def build_bwrap_argv(policy: ResolvedPolicy, *, proxy: ProxyMount | None = None)
 
     argv += ["--chdir", policy.cwd]
     if use_proxy:
-        # Start the in-sandbox TCP->UDS bridge, then exec the real command.
+        # Start the in-sandbox TCP->UDS bridge, then exec the real command. The bridge
+        # backgrounds itself once it is listening, so '&&' is both the wait and the guard:
+        # the command runs only after egress works, and not at all if it doesn't.
         bridge = f"python3 {BRIDGE_SCRIPT_TARGET} {PROXY_SOCKET_TARGET} {BRIDGE_PORT}"
-        argv += ["sh", "-c", f"{bridge} & sleep 0.2; exec {shlex.join(policy.command)}"]
+        argv += ["sh", "-c", f"{bridge} && exec {shlex.join(policy.command)}"]
     else:
         argv += policy.command
     return argv
-
-
-def build_sandbox_env(
-    policy: ResolvedPolicy, *, environ: dict[str, str] | None = None, proxy: bool = False
-) -> dict[str, str]:
-    """The environment the sandboxed command runs with. Handed to bwrap as its process
-    env (no ``--clearenv``), so the values never appear in the cmdline."""
-    env = build_env(policy, environ=environ)
-    if proxy:
-        env.update(_proxy_env())
-    return env
-
-
-def _proxy_env() -> dict[str, str]:
-    url = f"http://127.0.0.1:{BRIDGE_PORT}"
-    no_proxy = "localhost,127.0.0.1,::1"
-    return {
-        "HTTP_PROXY": url,
-        "HTTPS_PROXY": url,
-        "http_proxy": url,
-        "https_proxy": url,
-        "NO_PROXY": no_proxy,
-        "no_proxy": no_proxy,
-    }
 
 
 @functools.cache
@@ -138,48 +118,39 @@ class BubblewrapBackend(Backend):
     def is_available(self) -> bool:
         return check_available()
 
-    def build_argv(self, policy: ResolvedPolicy, *, proxy=None) -> list[str]:
-        return build_bwrap_argv(policy, proxy=proxy)
+    def describe(self, policy: ResolvedPolicy) -> str:
+        mount = _EXPLAIN_MOUNT if policy.network_mode == "proxy" else None
+        return f"{self.name} argv:\n  " + shlex.join(build_bwrap_argv(policy, proxy=mount))
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
-        if policy.network_mode == "proxy":
-            return self._run_with_proxy(policy, environ, capture)
-        argv = self.build_argv(policy)
-        env = build_sandbox_env(policy, environ=environ)
-        return self._spawn(argv, env, policy, capture)
-
-    def _spawn(self, argv: list[str], env: dict, policy: ResolvedPolicy, capture: bool) -> SandboxResult:
-        # The env is bwrap's process environment (not --setenv args), so values stay out
-        # of the world-readable /proc/PID/cmdline; env= fully replaces the operator's env.
-        if capture:
-            proc = subprocess.run(argv, env=env, capture_output=True, text=True)
-            return SandboxResult(proc.returncode, proc.stdout, proc.stderr, policy, argv, self.name)
-        proc = subprocess.run(argv, env=env)
-        return SandboxResult(proc.returncode, None, None, policy, argv, self.name)
-
-    def _run_with_proxy(self, policy: ResolvedPolicy, environ, capture: bool) -> SandboxResult:
-        base = state_dir() / "proxy"
-        logs = base / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        workdir = Path(tempfile.mkdtemp(dir=str(base)))
-        socket_path = workdir / "proxy.sock"
-
-        handler = _attach_proxy_log(logs)
-        try:
-            with BackgroundProxy(socket_path, policy.proxy_allow_hosts):
-                argv = self.build_argv(policy, proxy=ProxyMount(str(socket_path), bridge_script_path()))
-                env = build_sandbox_env(policy, environ=environ, proxy=True)
-                return self._spawn(argv, env, policy, capture)
-        finally:
-            logging.getLogger("hozo.proxy").removeHandler(handler)
-            handler.close()
-            shutil.rmtree(workdir, ignore_errors=True)
+        with ExitStack() as stack:
+            mount = None
+            if policy.network_mode == "proxy":
+                socket_path = stack.enter_context(_proxy_workspace())
+                stack.enter_context(BackgroundProxy(socket_path, policy.proxy_allow_hosts))
+                mount = ProxyMount(str(socket_path), bridge_script_path())
+            argv = build_bwrap_argv(policy, proxy=mount)
+            env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None)
+            return self._spawn(argv, env, policy, capture=capture)
 
 
-def _attach_proxy_log(logs_dir: Path) -> logging.Handler:
-    handler = logging.FileHandler(logs_dir / f"{date.today().isoformat()}.log")
+@contextmanager
+def _proxy_workspace():
+    """A per-run scratch dir for the proxy socket, with the proxy logger writing to a dated
+    file for the lifetime of the run. Yields the socket path."""
+    base = state_dir() / "proxy"
+    logs = base / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(dir=str(base)))
+
+    handler = logging.FileHandler(logs / f"{date.today().isoformat()}.log")
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     log = logging.getLogger("hozo.proxy")
     log.setLevel(logging.INFO)
     log.addHandler(handler)
-    return handler
+    try:
+        yield workdir / "proxy.sock"
+    finally:
+        log.removeHandler(handler)
+        handler.close()
+        shutil.rmtree(workdir, ignore_errors=True)

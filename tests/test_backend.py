@@ -16,8 +16,8 @@ class _StubBackend(Backend):
     def is_available(self):
         return True
 
-    def build_argv(self, policy, *, proxy=None):
-        return ["stub"]
+    def describe(self, policy):
+        return "stub"
 
     def run(self, policy, *, environ=None, capture=False):
         self.ran = policy
@@ -34,9 +34,9 @@ def test_get_unknown_backend_errors():
         get_backend("nonexistent")
 
 
-def test_bwrap_backend_build_argv(tmp_path):
+def test_bwrap_backend_describe(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    assert get_backend().build_argv(policy)[0] == "bwrap"
+    assert get_backend().describe(policy).startswith("bwrap argv:")
 
 
 def test_runner_delegates_to_injected_backend(tmp_path):

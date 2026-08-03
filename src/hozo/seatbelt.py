@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
+import textwrap
+from contextlib import ExitStack
 from dataclasses import replace
+from pathlib import Path
 
 from .backend import Backend, SandboxResult
 from .env import build_env
@@ -153,39 +155,27 @@ class SeatbeltBackend(Backend):
     def is_available(self) -> bool:
         return check_available()
 
-    def build_argv(self, policy: ResolvedPolicy, *, proxy=None) -> list[str]:
-        # Inspection form (used by explain): inline the profile via -p. run() writes the
-        # profile to a file (-f) and injects the runtime TMPDIR/proxy port.
-        return [SANDBOX_EXEC, "-p", build_seatbelt_profile(policy), *policy.command]
+    def describe(self, policy: ResolvedPolicy) -> str:
+        return f"{self.name} profile:\n" + textwrap.indent(build_seatbelt_profile(policy), "  ")
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
-        canon = _canonicalize(policy)
-        scratch = tempfile.mkdtemp(prefix="hozo-")
-        try:
+        with ExitStack() as stack:
+            scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="hozo-", ignore_cleanup_errors=True))
+            port = None
             if policy.network_mode == "proxy":
-                with BackgroundProxy(allowed_hosts=policy.proxy_allow_hosts, tcp_port=0) as bp:
-                    env = _sandbox_env(policy, environ, scratch, proxy_port=bp.port)
-                    profile = build_seatbelt_profile(canon, proxy_port=bp.port, writable_scratch=(scratch,))
-                    return self._spawn(profile, policy, env, capture)
-            env = _sandbox_env(policy, environ, scratch, proxy_port=None)
-            profile = build_seatbelt_profile(canon, writable_scratch=(scratch,))
-            return self._spawn(profile, policy, env, capture)
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+                port = stack.enter_context(BackgroundProxy(0, policy.proxy_allow_hosts)).port
 
-    def _spawn(self, profile: str, policy: ResolvedPolicy, env: dict, capture: bool) -> SandboxResult:
-        with tempfile.NamedTemporaryFile("w", suffix=".sb", delete=False) as fh:
-            fh.write(profile)
-            profile_path = fh.name
-        argv = [SANDBOX_EXEC, "-f", profile_path, *policy.command]
-        try:
-            if capture:
-                proc = subprocess.run(argv, env=env, cwd=policy.cwd, capture_output=True, text=True)
-                return SandboxResult(proc.returncode, proc.stdout, proc.stderr, policy, argv, self.name)
-            proc = subprocess.run(argv, env=env, cwd=policy.cwd)
-            return SandboxResult(proc.returncode, None, None, policy, argv, self.name)
-        finally:
-            os.unlink(profile_path)
+            env = build_env(policy, environ=environ, proxy_port=port)
+            env["TMPDIR"] = scratch  # isolated per-run temp; the real /var/folders TMPDIR is scrubbed
+            profile = build_seatbelt_profile(_canonicalize(policy), proxy_port=port, writable_scratch=(scratch,))
+
+            # Written to its own dir, not to the sandbox-visible scratch.
+            profile_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="hozo-sb-"))
+            profile_path = Path(profile_dir) / "policy.sb"
+            profile_path.write_text(profile)
+
+            argv = [SANDBOX_EXEC, "-f", str(profile_path), *policy.command]
+            return self._spawn(argv, env, policy, capture=capture, cwd=policy.cwd)
 
 
 def _canonicalize(policy: ResolvedPolicy) -> ResolvedPolicy:
@@ -194,15 +184,3 @@ def _canonicalize(policy: ResolvedPolicy) -> ResolvedPolicy:
     binds = [replace(b, source=os.path.realpath(b.source)) for b in policy.binds]
     tmpfs = [os.path.realpath(p) for p in policy.tmpfs]
     return replace(policy, binds=binds, tmpfs=tmpfs)
-
-
-def _sandbox_env(policy, environ, scratch: str, *, proxy_port: int | None) -> dict[str, str]:
-    env = build_env(policy, environ=environ)
-    env["TMPDIR"] = scratch  # isolated per-run temp; the real /var/folders TMPDIR is scrubbed
-    if proxy_port is not None:
-        url = f"http://127.0.0.1:{proxy_port}"  # numeric so the client never resolves DNS
-        no_proxy = "localhost,127.0.0.1,::1"
-        env.update(
-            HTTP_PROXY=url, HTTPS_PROXY=url, http_proxy=url, https_proxy=url, NO_PROXY=no_proxy, no_proxy=no_proxy
-        )
-    return env

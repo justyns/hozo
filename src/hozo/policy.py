@@ -38,20 +38,23 @@ class SandboxRequest:
 
 @dataclass
 class ResolvedPolicy:
-    command: list[str]
-    profiles_applied: list[str]
-    network_mode: str
-    clear_env: bool
-    cwd: str
-    home: str | None
-    binds: list[Bind]
-    tmpfs: list[str]
-    env_allow: list[str]
-    env_set: dict[str, str]
-    prepend_path: list[str]
-    proc: bool
-    dev: bool
-    proxy_allow_hosts: list[str]
+    """Defaults here *are* the resolver's starting point — ``_merge_layers`` folds layers
+    onto a bare ``ResolvedPolicy()`` rather than restating them."""
+
+    command: list[str] = field(default_factory=list)
+    profiles_applied: list[str] = field(default_factory=list)
+    network_mode: str = "none"
+    clear_env: bool = True  # secure default; a layer can opt out with clear_env: false
+    cwd: str = "{project}"  # expanded against the project path by resolve_policy
+    home: str | None = None
+    binds: list[Bind] = field(default_factory=list)
+    tmpfs: list[str] = field(default_factory=list)
+    env_allow: list[str] = field(default_factory=list)
+    env_set: dict[str, str] = field(default_factory=dict)
+    prepend_path: list[str] = field(default_factory=list)
+    proc: bool = False
+    dev: bool = False
+    proxy_allow_hosts: list[str] = field(default_factory=list)
 
 
 def _union(into: list[str], more: list[str]) -> None:
@@ -90,22 +93,7 @@ def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
 
 
 def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> ResolvedPolicy:
-    policy = ResolvedPolicy(
-        command=[],
-        profiles_applied=[layer.name for layer in layers],
-        network_mode="none",
-        clear_env=True,  # secure default; a layer can opt out with clear_env: false
-        cwd="{project}",
-        home=None,
-        binds=[],
-        tmpfs=[],
-        env_allow=[],
-        env_set={},
-        prepend_path=[],
-        proc=False,
-        dev=False,
-        proxy_allow_hosts=[],
-    )
+    policy = ResolvedPolicy(profiles_applied=[layer.name for layer in layers])
     explicit_modes: list[str] = []
     for layer in layers:
         _union(policy.env_allow, layer.env_allow)

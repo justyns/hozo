@@ -40,6 +40,20 @@ class ProxyMount:
     script_path: str  # host bridge script -> /run/hozo-bridge.py
 
 
+def proxy_env(port: int) -> dict[str, str]:
+    """Env vars that point a sandboxed HTTP client at the proxy on loopback."""
+    url = f"http://127.0.0.1:{port}"
+    no_proxy = "localhost,127.0.0.1,::1"
+    return {
+        "HTTP_PROXY": url,
+        "HTTPS_PROXY": url,
+        "http_proxy": url,
+        "https_proxy": url,
+        "NO_PROXY": no_proxy,
+        "no_proxy": no_proxy,
+    }
+
+
 def _parse_pattern(pattern: str) -> tuple[str, set[int]]:
     """Parse a host pattern into (domain_glob, allowed_ports). ``host:*`` = all ports."""
     if ":" in pattern:
@@ -68,38 +82,36 @@ def _domain_matches(domain: str, port: int, allowed: list[str]) -> bool:
 
 
 class ConnectProxy:
-    """CONNECT proxy on a Unix socket. ``allowed_hosts=None`` disables filtering."""
+    """CONNECT proxy. ``listen`` is either a ``Path`` (Unix socket, paired with the
+    in-sandbox bridge on Linux) or an int TCP port on loopback (macOS; 0 picks a free
+    one, read back from ``port``). ``allowed_hosts=None`` disables filtering."""
 
-    def __init__(
-        self,
-        socket_path: Path | None = None,
-        allowed_hosts: list[str] | None = None,
-        *,
-        tcp_port: int | None = None,
-    ):
-        self.socket_path = Path(socket_path) if socket_path is not None else None
+    def __init__(self, listen: Path | int, allowed_hosts: list[str] | None = None):
+        self.listen = listen
         self.allowed_hosts = allowed_hosts
-        self.tcp_port = tcp_port  # None => Unix socket (Linux); int (incl. 0) => TCP loopback (macOS)
-        self.port: int | None = None  # actual bound TCP port, set by start() in TCP mode
+        self.port: int | None = None  # bound TCP port; stays None when listening on a socket path
         self._server: asyncio.AbstractServer | None = None
 
+    @property
+    def address(self) -> str:
+        return str(self.listen) if isinstance(self.listen, Path) else f"127.0.0.1:{self.port}"
+
     async def start(self) -> None:
-        if self.tcp_port is None:
-            self.socket_path.unlink(missing_ok=True)
-            self._server = await asyncio.start_unix_server(self._handle_client, path=str(self.socket_path))
-            logger.info("proxy listening on %s (allow=%s)", self.socket_path, self.allowed_hosts)
+        if isinstance(self.listen, Path):
+            self.listen.unlink(missing_ok=True)
+            self._server = await asyncio.start_unix_server(self._handle_client, path=str(self.listen))
         else:
-            self._server = await asyncio.start_server(self._handle_client, host="127.0.0.1", port=self.tcp_port)
+            self._server = await asyncio.start_server(self._handle_client, host="127.0.0.1", port=self.listen)
             self.port = self._server.sockets[0].getsockname()[1]
-            logger.info("proxy listening on 127.0.0.1:%d (allow=%s)", self.port, self.allowed_hosts)
+        logger.info("proxy listening on %s (allow=%s)", self.address, self.allowed_hosts)
 
     async def stop(self) -> None:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        if self.socket_path is not None:
-            self.socket_path.unlink(missing_ok=True)
+        if isinstance(self.listen, Path):
+            self.listen.unlink(missing_ok=True)
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -189,21 +201,15 @@ class BackgroundProxy:
     by the time ``__enter__`` returns and is torn down on exit.
     """
 
-    def __init__(
-        self,
-        socket_path: Path | None = None,
-        allowed_hosts: list[str] | None = None,
-        *,
-        tcp_port: int | None = None,
-    ):
-        self._proxy = ConnectProxy(socket_path, allowed_hosts, tcp_port=tcp_port)
+    def __init__(self, listen: Path | int, allowed_hosts: list[str] | None = None):
+        self._proxy = ConnectProxy(listen, allowed_hosts)
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._ready = threading.Event()
 
     @property
     def port(self) -> int | None:
-        """The bound TCP port (TCP-loopback mode only), valid after ``__enter__``."""
+        """The bound TCP port (TCP listeners only), valid after ``__enter__``."""
         return self._proxy.port
 
     def _serve(self) -> None:

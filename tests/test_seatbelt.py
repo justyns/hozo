@@ -91,10 +91,10 @@ def test_canonicalize_resolves_symlinks(tmp_path):
     assert seatbelt._canonicalize(p).binds[0].source == str(real)
 
 
-def test_build_argv_uses_sandbox_exec(tmp_path):
+def test_describe_renders_the_profile(tmp_path):
     p = resolve_policy(SandboxRequest(command=["echo", "hi"], project=str(tmp_path)))
-    argv = seatbelt.SeatbeltBackend().build_argv(p)
-    assert argv[0] == "/usr/bin/sandbox-exec" and argv[-1] == "hi"
+    text = seatbelt.SeatbeltBackend().describe(p)
+    assert text.startswith("seatbelt profile:") and "(deny default)" in text
 
 
 def test_check_available_returns_bool():
