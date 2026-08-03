@@ -21,11 +21,11 @@ binds:
   # The host claude binary. The native installer symlinks ~/.local/bin/claude into
   # ~/.local/share/claude/versions/, so both must be bound for the symlink to resolve. (A
   # global npm install whose prefix is /usr is already on PATH via the /usr bind.)
-  - { source: "{home}/.local/bin", target: "{home}/.local/bin", mode: ro, optional: true }
-  - { source: "{home}/.local/share/claude", target: "{home}/.local/share/claude", mode: ro, optional: true }
+  - { source: "{home}/.local/bin", mode: ro, optional: true }
+  - { source: "{home}/.local/share/claude", mode: ro, optional: true }
   # Claude's config, auth, sessions, and memory.
-  - { source: "{home}/.claude", target: "{home}/.claude", mode: rw, optional: true }
-  - { source: "{home}/.claude.json", target: "{home}/.claude.json", mode: rw, optional: true }
+  - { source: "{home}/.claude", mode: rw, optional: true }
+  - { source: "{home}/.claude.json", mode: rw, optional: true }
 
 proxy:
   allow_hosts:

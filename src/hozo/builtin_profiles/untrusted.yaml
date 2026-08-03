@@ -1,6 +1,6 @@
 name: untrusted
 description: >-
-  No network and no real home; project mounted read-write at /work. Layers on top of
+  No network and no real home; project mounted read-write in place. Layers on top of
   base, whose deny-all env scrubbing already keeps host secrets out of the sandbox.
 
 network:

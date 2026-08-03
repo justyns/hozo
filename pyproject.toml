@@ -1,7 +1,7 @@
 [project]
 name = "hozo"
 dynamic = ["version"]
-description = "Composable bubblewrap sandboxes."
+description = "Composable sandboxes for Linux (bubblewrap) and macOS (Seatbelt)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

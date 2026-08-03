@@ -1,8 +1,16 @@
 import os
+import platform
+
+import pytest
 
 from hozo import bwrap
+from hozo.env import build_env
 from hozo.policy import SandboxRequest, resolve_policy
-from hozo.proxy import ProxyMount
+from hozo.proxy import BRIDGE_PORT, ProxyMount
+
+# The renderer is Linux-only, and these assertions expect the Linux `base` profile
+# (macOS resolves `base-macos`, which binds no system paths of its own).
+pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="bwrap renderer is Linux-only")
 
 
 def _has_seq(argv, seq):
@@ -31,10 +39,10 @@ def test_network_host_keeps_net(tmp_path):
     assert "--unshare-net" not in _argv(tmp_path, network="host")
 
 
-def test_project_bound_at_work_and_chdir(tmp_path):
+def test_project_bound_in_place_and_chdir(tmp_path):
     argv = _argv(tmp_path)
-    assert _has_seq(argv, ["--bind", str(tmp_path), "/work"])
-    assert _has_seq(argv, ["--chdir", "/work"])
+    assert _has_seq(argv, ["--bind", str(tmp_path), str(tmp_path)])
+    assert _has_seq(argv, ["--chdir", str(tmp_path)])
 
 
 def test_usr_bind_and_merged_usr(tmp_path):
@@ -52,7 +60,7 @@ def test_no_env_flags_in_argv(tmp_path):
 
 def test_sandbox_env_scrubs_secrets_keeps_allowed(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    env = bwrap.build_sandbox_env(policy, environ={"ANTHROPIC_API_KEY": "sekret", "TERM": "xterm"})
+    env = build_env(policy, environ={"ANTHROPIC_API_KEY": "sekret", "TERM": "xterm"})
     assert "ANTHROPIC_API_KEY" not in env  # not in the allowlist -> never copied
     assert env["TERM"] == "xterm"
     assert env["HOME"] == os.path.expanduser("~")
@@ -69,13 +77,15 @@ def test_proxy_mode_renders_bridge_binds_and_wrapper(tmp_path):
     assert _has_seq(argv, ["--ro-bind", "/h/proxy.sock", "/run/hozo-proxy.sock"])
     assert _has_seq(argv, ["--ro-bind", "/h/bridge.py", "/run/hozo-bridge.py"])
     assert argv[-3:-1] == ["sh", "-c"]
-    assert "python3 /run/hozo-bridge.py" in argv[-1] and "exec curl x" in argv[-1]
+    assert f"python3 /run/hozo-bridge.py /run/hozo-proxy.sock {BRIDGE_PORT}" in argv[-1]
+    assert "exec curl x" in argv[-1]
 
 
-def test_proxy_env_has_http_proxy(tmp_path):
+def test_proxy_env_points_at_the_bridge_port(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), profiles=["proxy"]))
-    env = bwrap.build_sandbox_env(policy, proxy=True)
-    assert env["HTTP_PROXY"] == "http://127.0.0.1:12345"
+    env = build_env(policy, environ={}, proxy_port=BRIDGE_PORT)
+    assert env["HTTP_PROXY"] == f"http://127.0.0.1:{BRIDGE_PORT}"
+    assert env["NO_PROXY"] == "localhost,127.0.0.1,::1"
 
 
 def test_proxy_mount_ignored_when_not_proxy(tmp_path):

@@ -23,7 +23,7 @@ def test_programmatic_request_without_yaml(tmp_path):
     policy = hozo.resolve_policy(req)
     assert policy.network_mode == "none"
     assert hozo.build_bwrap_argv(policy)[0] == "bwrap"
-    assert "/work" in hozo.explain_policy(policy, environ={})
+    assert str(tmp_path) in hozo.explain_policy(policy, environ={})
 
 
 def test_inline_overrides_beat_profiles(tmp_path):
@@ -33,7 +33,7 @@ def test_inline_overrides_beat_profiles(tmp_path):
 
 def test_run_returns_result(tmp_path):
     if not hozo.check_available():
-        pytest.skip("bwrap not installed")
+        pytest.skip("no sandbox runtime installed")
     res = hozo.run(
         hozo.SandboxRequest(command=["sh", "-c", "echo hi"], project=str(tmp_path)),
         capture=True,

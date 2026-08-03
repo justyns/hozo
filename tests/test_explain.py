@@ -1,13 +1,14 @@
 from hozo import explain
+from hozo.bwrap import BubblewrapBackend
 from hozo.policy import SandboxRequest, resolve_policy
 
 
 def test_explain_lists_sections(tmp_path):
     p = resolve_policy(SandboxRequest(command=["echo", "hi"], project=str(tmp_path)))
-    text = explain.explain_policy(p, environ={"TERM": "xterm"})
+    text = explain.explain_policy(p, environ={"TERM": "xterm"}, backend=BubblewrapBackend())
     assert "Profiles:" in text and "base" in text
     assert "Network:" in text
-    assert "/work" in text
+    assert str(tmp_path) in text
     assert "Env:" in text and "HOME" in text
     assert "bwrap" in text
 
@@ -27,6 +28,8 @@ def test_writable_shows_host_source(tmp_path):
 def test_command_setenv_not_redacted(tmp_path):
     p = resolve_policy(SandboxRequest(command=["tool", "--setenv", "K", "V"], project=str(tmp_path)))
     argv = next(
-        line for line in explain.explain_policy(p, environ={}).splitlines() if line.strip().startswith("bwrap --")
+        line
+        for line in explain.explain_policy(p, environ={}, backend=BubblewrapBackend()).splitlines()
+        if line.strip().startswith("bwrap --")
     )
     assert "tool --setenv K V" in argv

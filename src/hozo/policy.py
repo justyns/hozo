@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .errors import HozoError, MergeConflictError
 from .paths import expand_path
-from .profiles import NETWORK_MODES, Bind, Profile, load_profile
+from .profiles import NETWORK_MODES, Bind, Profile, default_base_name, load_profile
 from .proxy import valid_port_spec
 
 _NETWORK_RANK = {mode: rank for rank, mode in enumerate(NETWORK_MODES)}  # smaller = more restrictive
@@ -38,20 +38,23 @@ class SandboxRequest:
 
 @dataclass
 class ResolvedPolicy:
-    command: list[str]
-    profiles_applied: list[str]
-    network_mode: str
-    clear_env: bool
-    cwd: str
-    home: str | None
-    binds: list[Bind]
-    tmpfs: list[str]
-    env_allow: list[str]
-    env_set: dict[str, str]
-    prepend_path: list[str]
-    proc: bool
-    dev: bool
-    proxy_allow_hosts: list[str]
+    """Defaults here *are* the resolver's starting point — ``_merge_layers`` folds layers
+    onto a bare ``ResolvedPolicy()`` rather than restating them."""
+
+    command: list[str] = field(default_factory=list)
+    profiles_applied: list[str] = field(default_factory=list)
+    network_mode: str = "none"
+    clear_env: bool = True  # secure default; a layer can opt out with clear_env: false
+    cwd: str = "{project}"  # expanded against the project path by resolve_policy
+    home: str | None = None
+    binds: list[Bind] = field(default_factory=list)
+    tmpfs: list[str] = field(default_factory=list)
+    env_allow: list[str] = field(default_factory=list)
+    env_set: dict[str, str] = field(default_factory=dict)
+    prepend_path: list[str] = field(default_factory=list)
+    proc: bool = False
+    dev: bool = False
+    proxy_allow_hosts: list[str] = field(default_factory=list)
 
 
 def _union(into: list[str], more: list[str]) -> None:
@@ -68,17 +71,15 @@ def _absolute(value: str, label: str) -> str:
 
 def _expand_bind(bind: Bind, project: str) -> Bind:
     source = expand_path(bind.source, project=Path(project))
-    target = expand_path(bind.target, project=Path(project))
-    for label, value in (("source", source), ("target", target)):
-        _absolute(value, f"bind {label}")
-    return Bind(source=source, target=target, mode=bind.mode, optional=bind.optional)
+    _absolute(source, "bind source")
+    return Bind(source=source, mode=bind.mode, optional=bind.optional)
 
 
 def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
     for i, existing in enumerate(binds):
-        if existing.target != bind.target:
+        if existing.source != bind.source:
             continue
-        if existing.source == bind.source and existing.mode == bind.mode:
+        if existing.mode == bind.mode:
             # same mount from two layers; a required bind wins over an optional one
             existing.optional = existing.optional and bind.optional
             return
@@ -86,29 +87,13 @@ def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
             binds[i] = bind
             return
         raise MergeConflictError(
-            f"bind target {bind.target!r} requested by two layers with different source/mode: "
-            f"{existing.source!r}({existing.mode}) vs {bind.source!r}({bind.mode})"
+            f"bind {bind.source!r} requested by two layers with different modes: {existing.mode} vs {bind.mode}"
         )
     binds.append(bind)
 
 
 def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> ResolvedPolicy:
-    policy = ResolvedPolicy(
-        command=[],
-        profiles_applied=[layer.name for layer in layers],
-        network_mode="none",
-        clear_env=True,  # secure default; a layer can opt out with clear_env: false
-        cwd="/work",
-        home=None,
-        binds=[],
-        tmpfs=[],
-        env_allow=[],
-        env_set={},
-        prepend_path=[],
-        proc=False,
-        dev=False,
-        proxy_allow_hosts=[],
-    )
+    policy = ResolvedPolicy(profiles_applied=[layer.name for layer in layers])
     explicit_modes: list[str] = []
     for layer in layers:
         _union(policy.env_allow, layer.env_allow)
@@ -158,7 +143,7 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
 
     layers: list[Profile] = []
     if not request.no_base:
-        layers.append(load_profile("base"))
+        layers.append(load_profile(default_base_name()))
     for name in request.profiles:
         layers.append(load_profile(name))
 
@@ -171,10 +156,9 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
         policy.home = _absolute(expand_path(policy.home, project=proj), "home")
     policy.prepend_path = [expand_path(p, project=proj) for p in policy.prepend_path]
 
-    # The project is mounted read-write at the working dir (default /work; a profile can set
-    # cwd: "{project}" to mount it in place at its real host path — e.g. for path-keyed tools).
+    # The project is mounted read-write in place at its real host path; cwd defaults to it.
     if request.bind_project:
-        _add_bind(policy.binds, Bind(source=project, target=policy.cwd, mode="rw"), override=True)
+        _add_bind(policy.binds, Bind(source=project, mode="rw"), override=True)
 
     # Inline request fields win unconditionally over profiles.
     policy.env_set.update(request.env)

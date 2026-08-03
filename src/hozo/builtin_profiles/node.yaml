@@ -5,8 +5,7 @@ description: >-
   without +proxy for offline use.
 
 binds:
-  - source: "~/.cache/npm"
-    target: "{home}/.npm"
+  - source: "~/.npm"
     mode: rw
     optional: true
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import importlib.resources as resources
+import platform
 from dataclasses import dataclass, field
 
 import yaml
@@ -24,7 +25,6 @@ _BIND_MODES = ("ro", "rw")
 @dataclass
 class Bind:
     source: str
-    target: str
     mode: str = "ro"
     optional: bool = False
 
@@ -73,15 +73,12 @@ def _parse_bind(raw, source: str) -> Bind:
     if not isinstance(raw, dict):
         raise ProfileError(f"{source}: each bind must be a mapping")
     src = raw.get("source")
-    target = raw.get("target")
-    if not isinstance(src, str) or not src:
-        raise ProfileError(f"{source}: bind missing 'source'")
-    if not isinstance(target, str) or not _abs_or_placeholder(target):
-        raise ProfileError(f"{source}: bind 'target' must be an absolute path or placeholder: {target!r}")
+    if not isinstance(src, str) or not _abs_or_placeholder(src):
+        raise ProfileError(f"{source}: bind 'source' must be an absolute path or placeholder: {src!r}")
     mode = raw.get("mode", "ro")
     if mode not in _BIND_MODES:
         raise ProfileError(f"{source}: bind 'mode' must be 'ro' or 'rw': {mode!r}")
-    return Bind(source=src, target=target, mode=mode, optional=bool(raw.get("optional", False)))
+    return Bind(source=src, mode=mode, optional=bool(raw.get("optional", False)))
 
 
 def parse_profile(data, source: str) -> Profile:
@@ -158,6 +155,11 @@ def _builtin_dir():
 
 def builtin_names() -> list[str]:
     return sorted(entry.name[:-5] for entry in _builtin_dir().iterdir() if entry.name.endswith(".yaml"))
+
+
+def default_base_name() -> str:
+    """The implicit base profile for this platform: macOS needs a different system-path set."""
+    return "base-macos" if platform.system() == "Darwin" else "base"
 
 
 def available_profiles() -> dict[str, str]:

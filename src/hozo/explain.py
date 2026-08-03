@@ -1,18 +1,19 @@
 """Human-readable audit of a ResolvedPolicy.
 
 Lists the backend, profiles, network, home, binds, writable host paths, the env var
-*names* the sandbox runs with, the command, and the full runtime argv. Env values
-never appear (they aren't in the argv), so explain output is always safe to paste.
+*names* the sandbox runs with, the command, and finally the backend's own rendering of
+what it would run. Env values never appear, so explain output is always safe to paste.
+
+Nothing here is backend-specific: the tail comes from ``Backend.describe``.
 """
 
 from __future__ import annotations
 
 import shlex
 
-from .backend import Backend
-from .bwrap import BubblewrapBackend, build_sandbox_env
+from .backend import Backend, get_backend
+from .env import build_env
 from .policy import ResolvedPolicy
-from .proxy import ProxyMount
 
 
 def explain_policy(
@@ -21,7 +22,7 @@ def explain_policy(
     environ: dict[str, str] | None = None,
     backend: Backend | None = None,
 ) -> str:
-    backend = backend or BubblewrapBackend()
+    backend = backend or get_backend()
 
     lines = [
         f"Backend:  {backend.name}",
@@ -35,22 +36,22 @@ def explain_policy(
         lines.append(f"Network:  {policy.network_mode}")
 
     if policy.home:
-        lines.append(f"Home:     {policy.home} (ephemeral)")
+        lines.append(f"Home:     {policy.home}")
 
     lines.append(f"Workdir:  {policy.cwd}")
 
     lines.append("Binds:")
     for bind in policy.binds:
         optional = " (optional)" if bind.optional else ""
-        lines.append(f"  {bind.mode:2}  {bind.source} -> {bind.target}{optional}")
+        lines.append(f"  {bind.mode:2}  {bind.source}{optional}")
     writable = [bind.source for bind in policy.binds if bind.mode == "rw"]
     lines.append("Writable host paths: " + (", ".join(writable) or "(none)"))
 
-    env_names = sorted(build_sandbox_env(policy, environ=environ, proxy=(policy.network_mode == "proxy")))
+    # Names only, so the placeholder port stands in for the per-run one.
+    proxy_port = 0 if policy.network_mode == "proxy" else None
+    env_names = sorted(build_env(policy, environ=environ, proxy_port=proxy_port))
     lines.append("Env:      " + (", ".join(env_names) or "(none)"))
 
     lines.append("Command:  " + (shlex.join(policy.command) if policy.command else "(none)"))
 
-    proxy = ProxyMount("<host-proxy.sock>", "<bridge.py>") if policy.network_mode == "proxy" else None
-    argv = backend.build_argv(policy, proxy=proxy)
-    return "\n".join(lines) + f"\n\n{backend.name} argv:\n  {shlex.join(argv)}"
+    return "\n".join(lines) + "\n\n" + backend.describe(policy)

@@ -24,11 +24,12 @@ from .policy import SandboxRequest, resolve_policy
 from .profiles import Bind, available_profiles
 
 _VERBS = ("run", "explain", "profile")
+# Flags that map straight onto a SandboxRequest field.
 _VALUE_OPTS = {"--project": "project", "--network": "network"}
 _BOOL_FLAGS = {"--no-base": "no_base", "--override": "override"}
 
 _USAGE = """\
-hozo — run tools in composable bubblewrap sandboxes
+hozo — run tools in composable sandboxes
 
   hozo +profile [+profile ...] -- COMMAND [ARGS...]
   hozo explain +profile ... -- COMMAND
@@ -72,13 +73,19 @@ def main(argv: list[str] | None = None) -> int:
     tokens = [tok for tok in argv if not _is_profile(tok)]
 
     try:
-        opts, positional = _parse_flags(tokens)
+        request, positional = _parse_flags(tokens)
         verb = positional.pop(0) if positional and positional[0] in _VERBS else "run"
         if verb == "profile":
             return _cmd_profile(positional)
         if not command:
             raise _UsageError(2, f"'{verb}' needs a command after '--'")
-        return _cmd_run(profiles, command, opts, explain_only=(verb == "explain"))
+        request.profiles, request.command = profiles, command
+
+        policy = resolve_policy(request)
+        if verb == "explain":
+            print(explain_policy(policy))
+            return 0
+        return SandboxRunner().run(policy).returncode
     except _UsageError as exc:
         if exc.message:
             print(f"hozo: {exc.message}", file=sys.stderr)
@@ -90,17 +97,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _parse_flags(tokens: list[str]) -> tuple[dict, list[str]]:
-    """Split remaining tokens into (opts, positionals). Raises ``_UsageError`` on a bad flag."""
-    opts = {
-        "project": None,
-        "network": None,
-        "allow_hosts": [],
-        "allow_read": [],
-        "allow_write": [],
-        "no_base": False,
-        "override": False,
-    }
+def _parse_flags(tokens: list[str]) -> tuple[SandboxRequest, list[str]]:
+    """Fold the flag tokens into a SandboxRequest; return it plus the leftover positionals.
+    Raises ``_UsageError`` on a bad flag."""
+    request = SandboxRequest()
     positional: list[str] = []
     walker = iter(tokens)
     for tok in walker:
@@ -110,48 +110,29 @@ def _parse_flags(tokens: list[str]) -> tuple[dict, list[str]]:
             value = next(walker, None)
             if value is None or value.startswith("-"):
                 raise _UsageError(2, f"option {tok} needs a value")
-            opts[_VALUE_OPTS[tok]] = value
+            setattr(request, _VALUE_OPTS[tok], value)
         elif tok in _BOOL_FLAGS:
-            opts[_BOOL_FLAGS[tok]] = True
+            setattr(request, _BOOL_FLAGS[tok], True)
         elif tok == "--allow-net":  # bare = full host network
-            opts["network"] = "host"
+            request.network = "host"
         elif tok.startswith("--allow-net="):  # specific hosts -> proxy allowlist
-            opts["network"] = "proxy"
-            opts["allow_hosts"] += _csv(tok)
+            request.network = "proxy"
+            request.allow_hosts += _csv(tok)
         elif tok.startswith("--allow-read="):
-            opts["allow_read"] += _csv(tok)
+            request.binds += _binds(tok, "ro")
         elif tok.startswith("--allow-write="):
-            opts["allow_write"] += _csv(tok)
+            request.binds += _binds(tok, "rw")
         elif tok in ("--allow-read", "--allow-write"):
             raise _UsageError(2, f"{tok} needs paths, e.g. {tok}=/path/a,/path/b")
         elif tok.startswith("-"):
             raise _UsageError(2, f"unknown option {tok!r}")
         else:
             positional.append(tok)
-    return opts, positional
+    return request, positional
 
 
-def _build_request(profiles: list[str], command: list[str], opts: dict) -> SandboxRequest:
-    binds = [Bind(source=os.path.abspath(p), target=os.path.abspath(p), mode="ro") for p in opts["allow_read"]]
-    binds += [Bind(source=os.path.abspath(p), target=os.path.abspath(p), mode="rw") for p in opts["allow_write"]]
-    return SandboxRequest(
-        command=command,
-        project=opts["project"],
-        profiles=profiles,
-        network=opts["network"],
-        allow_hosts=opts["allow_hosts"],
-        binds=binds,
-        no_base=opts["no_base"],
-        override=opts["override"],
-    )
-
-
-def _cmd_run(profiles: list[str], command: list[str], opts: dict, *, explain_only: bool) -> int:
-    policy = resolve_policy(_build_request(profiles, command, opts))
-    if explain_only:
-        print(explain_policy(policy))
-        return 0
-    return SandboxRunner().run(policy).returncode
+def _binds(tok: str, mode: str) -> list[Bind]:
+    return [Bind(source=os.path.abspath(path), mode=mode) for path in _csv(tok)]
 
 
 def _cmd_profile(args: list[str]) -> int:

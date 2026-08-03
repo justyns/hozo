@@ -1,3 +1,5 @@
+import platform
+
 import pytest
 
 import hozo
@@ -16,8 +18,8 @@ class _StubBackend(Backend):
     def is_available(self):
         return True
 
-    def build_argv(self, policy, *, proxy=None):
-        return ["stub"]
+    def describe(self, policy):
+        return "stub"
 
     def run(self, policy, *, environ=None, capture=False):
         self.ran = policy
@@ -25,8 +27,8 @@ class _StubBackend(Backend):
 
 
 def test_get_backend_default():
-    backend = get_backend()
-    assert backend.name == "bwrap" and isinstance(backend, BubblewrapBackend)
+    expected = {"Linux": "bwrap", "Darwin": "seatbelt"}[platform.system()]
+    assert get_backend().name == expected
 
 
 def test_get_unknown_backend_errors():
@@ -34,9 +36,9 @@ def test_get_unknown_backend_errors():
         get_backend("nonexistent")
 
 
-def test_bwrap_backend_build_argv(tmp_path):
+def test_bwrap_backend_describe(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    assert get_backend().build_argv(policy)[0] == "bwrap"
+    assert BubblewrapBackend().describe(policy).startswith("bwrap argv:")
 
 
 def test_runner_delegates_to_injected_backend(tmp_path):
@@ -44,3 +46,23 @@ def test_runner_delegates_to_injected_backend(tmp_path):
     result = hozo.SandboxRunner(backend).run(SandboxRequest(command=["true"], project=str(tmp_path)))
     assert result.returncode == 0 and result.backend == "stub"
     assert backend.ran is not None
+
+
+def test_get_backend_detects_darwin(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    assert isinstance(get_backend(), hozo.SeatbeltBackend)
+
+
+def test_get_backend_detects_linux(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    assert isinstance(get_backend(), BubblewrapBackend)
+
+
+def test_get_backend_unsupported_platform_errors(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    with pytest.raises(HozoError):
+        get_backend()
+
+
+def test_get_seatbelt_backend_explicit():
+    assert isinstance(get_backend("seatbelt"), hozo.SeatbeltBackend)
