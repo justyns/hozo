@@ -27,6 +27,7 @@ hozo explain +untrusted -- echo hi    # shows the resolved policy (bwrap args / 
 hozo +node +proxy -- npm install      # network limited to the npm registry
 hozo --allow-net=pypi.org -- pip install requests   # grant just this host
 hozo --allow-read=/etc/hosts +untrusted -- cat /etc/hosts
+hozo audit -- ./some-tool             # what would this need? (see below)
 hozo profile list                     # built-in + your profiles
 ```
 
@@ -53,6 +54,21 @@ Ad-hoc allows can be granted on the cli:
 - `--allow-net=HOST,HOST` allows connecting to these hosts via the proxy
 - `--allow-net` with no value opens full host networking, no proxy required
 - `--allow-read=PATH,PATH` / `--allow-write=PATH,PATH` allows reading/writing to specific paths.
+
+## Finding out what a tool needs
+
+If you want to build a new profile for a tool or command, the easiest way to start
+is by using `hozo audit`.  It runs the command in a sandbox with a very permissive policy, and reports what it accessed.
+
+```bash
+hozo audit +node -- npm install       # what does npm need beyond +node?
+hozo audit --network-only -- ./tool   # egress only; no strace needed
+hozo audit --show-granted -- ./tool   # also show which existing grants got used
+hozo audit --audit-out=p.yaml -- make # write the suggested profile somewhere specific
+```
+
+A profile is generated in a temporary file and printed to stdout.  You can review it and 
+make changes before saving it to your own profile directory.
 
 ## Network egress
 

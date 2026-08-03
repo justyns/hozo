@@ -6,6 +6,7 @@ A Python library with a thin CLI on top; import the public names below directly 
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .audit import AuditReport, render_profile, render_report, run_audit
 from .backend import Backend, SandboxResult, get_backend
 from .bwrap import BubblewrapBackend, build_bwrap_argv
 from .errors import HozoError, MergeConflictError, ProfileError
@@ -47,6 +48,10 @@ __all__ = [
     "explain_policy",
     "check_available",
     "run",
+    "run_audit",
+    "render_report",
+    "render_profile",
+    "AuditReport",
     "HozoError",
     "ProfileError",
     "MergeConflictError",

@@ -1,0 +1,25 @@
+name: insecure
+description: >-
+  NO ISOLATION. Every host path readable, all egress allowed. Meant for discovering what a
+  tool needs (see `hozo audit`), never for running something you don't trust.
+
+network:
+  mode: host
+
+proxy:
+  allow_hosts: ["*:*"]
+
+# Using "/" doesn't work because it will be mounted over top of /proc and /dev.
+# This needs tested some more, but we can probably get / to work later.
+binds:
+  - { source: /usr, mode: ro }
+  - { source: /etc, mode: ro, optional: true }
+  - { source: /home, mode: ro, optional: true }
+  - { source: /root, mode: ro, optional: true }
+  - { source: /var, mode: ro, optional: true }
+  - { source: /opt, mode: ro, optional: true }
+  - { source: /srv, mode: ro, optional: true }
+  - { source: /boot, mode: ro, optional: true }
+  - { source: /mnt, mode: ro, optional: true }
+  - { source: /nix, mode: ro, optional: true }
+  - { source: /sys, mode: ro, optional: true }

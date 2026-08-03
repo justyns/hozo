@@ -6,6 +6,7 @@ kept verbatim and never shell-parsed):
     hozo +p [+p ...] -- CMD [ARGS...]        # run (default verb)
     hozo run     +p ... -- CMD ...
     hozo explain +p ... -- CMD ...
+    hozo audit   +p ... -- CMD ...
     hozo profile list
 
 Grants are deny-by-default — nothing is allowed unless a profile or an --allow-* flag
@@ -16,14 +17,17 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 
+from . import audit
 from .errors import HozoError
 from .executor import SandboxRunner
 from .explain import explain_policy
 from .policy import SandboxRequest, resolve_policy
 from .profiles import Bind, available_profiles
 
-_VERBS = ("run", "explain", "profile")
+_VERBS = ("run", "explain", "profile", "audit")
 # Flags that map straight onto a SandboxRequest field.
 _VALUE_OPTS = {"--project": "project", "--network": "network"}
 _BOOL_FLAGS = {"--no-base": "no_base", "--override": "override"}
@@ -33,10 +37,12 @@ hozo — run tools in composable sandboxes
 
   hozo +profile [+profile ...] -- COMMAND [ARGS...]
   hozo explain +profile ... -- COMMAND
+  hozo audit   +profile ... -- COMMAND
   hozo profile list
 
 Grants (deny-by-default): --allow-net[=HOST,...]  --allow-read=PATH,...  --allow-write=PATH,...
 Flags: --project PATH  --network none|proxy|host  --no-base  --override
+Audit: --network-only  --show-granted  --audit-out=PATH
 """
 
 
@@ -58,6 +64,13 @@ def _is_profile(tok: str) -> bool:
     return tok.startswith("+") and len(tok) > 1
 
 
+_AUDIT_BOOL_OPTS = ("--network-only", "--show-granted")
+
+
+def _is_audit_opt(tok: str) -> bool:
+    return tok in _AUDIT_BOOL_OPTS or tok.startswith("--audit-out=")
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -70,7 +83,10 @@ def main(argv: list[str] | None = None) -> int:
         idx = argv.index("--")
         argv, command = argv[:idx], argv[idx + 1 :]
     profiles = [tok[1:] for tok in argv if _is_profile(tok)]
-    tokens = [tok for tok in argv if not _is_profile(tok)]
+    # Pulled out like '+profile' tokens are, so they never become SandboxRequest fields.
+    audit_opts = {tok[2:].replace("-", "_"): True for tok in argv if tok in _AUDIT_BOOL_OPTS}
+    audit_out = next((tok.split("=", 1)[1] for tok in argv if tok.startswith("--audit-out=")), None)
+    tokens = [tok for tok in argv if not _is_profile(tok) and not _is_audit_opt(tok)]
 
     try:
         request, positional = _parse_flags(tokens)
@@ -79,7 +95,12 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_profile(positional)
         if not command:
             raise _UsageError(2, f"'{verb}' needs a command after '--'")
+        if verb != "audit" and (audit_opts or audit_out is not None):
+            raise _UsageError(2, "--network-only, --show-granted and --audit-out only apply to 'hozo audit'")
         request.profiles, request.command = profiles, command
+
+        if verb == "audit":
+            return _cmd_audit(request, out_path=audit_out, **audit_opts)
 
         policy = resolve_policy(request)
         if verb == "explain":
@@ -133,6 +154,35 @@ def _parse_flags(tokens: list[str]) -> tuple[SandboxRequest, list[str]]:
 
 def _binds(tok: str, mode: str) -> list[Bind]:
     return [Bind(source=os.path.abspath(path), mode=mode) for path in _csv(tok)]
+
+
+def _cmd_audit(
+    request: SandboxRequest,
+    *,
+    out_path: str | None,
+    network_only: bool = False,
+    show_granted: bool = False,
+) -> int:
+    """The only place audit prints or writes a file. Report goes to stderr so the audited
+    command's own stdout stays pipeable; its exit code passes through."""
+    print(audit.BANNER, end="", file=sys.stderr)
+    report = audit.run_audit(request, network_only=network_only)
+    print("\n" + audit.render_report(report, show_granted=show_granted), end="", file=sys.stderr)
+
+    if not report.empty:
+        name = audit.profile_name(request.command)
+        target = Path(out_path) if out_path else _temp_profile(name)
+        target.write_text(audit.render_profile(report, name), encoding="utf-8")
+        print(f"\nSuggested profile: {target}", file=sys.stderr)
+    return report.returncode
+
+
+def _temp_profile(name: str) -> Path:
+    """Default output lands in the temp dir, not the project — an audit shouldn't drop an
+    untracked file into whatever repo you happen to be standing in."""
+    fd, path = tempfile.mkstemp(prefix=f"hozo-{name}-", suffix=".yaml")
+    os.close(fd)
+    return Path(path)
 
 
 def _cmd_profile(args: list[str]) -> int:

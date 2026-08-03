@@ -18,6 +18,16 @@ Pipeline: load profiles → merge → backend (`backend.py`: the `Backend` ABC +
 renderer). Binds are **identity-only** — a host path is always made available at the same
 path in the sandbox (no source→target remapping), so both backends can express every bind.
 
+`audit.py` (`hozo audit`) is the dynamic counterpart to `explain`: run widened, report what
+the real policy would deny. It deliberately adds no plumbing to the layers above, leaning on
+four existing properties instead, so don't break these without checking here first:
+identity-only binds (traced paths *are* host paths); a later bind shadowing an earlier
+`--dir` (so `base`'s empty `$HOME` needs no special case); `proxy_allow_hosts: ["*:*"]`
+already meaning allow-all; and `strace` running *inside* the sandbox, which keeps bwrap's own
+setup out of the trace and means no backend hook is needed. All the widening lives in the
+`insecure` profile as data. It binds only non-symlinked top-level dirs: binding `/` would
+mount over the root after `/proc`, `/dev` and the merged-/usr symlinks already exist.
+
 macOS notes: Seatbelt filters access to the real filesystem (it can't remap or overlay), so
 `$HOME` stays real and only explicitly-bound subpaths under it are reachable; isolation is
 weaker than Linux namespaces (no PID/process isolation). Bind sources are `realpath`'d to
@@ -45,9 +55,10 @@ uv run ruff check src tests
 uv run black src tests
 ```
 
-Unit tests need no `bwrap`; integration tests are guarded by `skipif(not shutil.which("bwrap"))`.
+Unit tests need no `bwrap`; integration tests are guarded by `skipif(not hozo.check_available())`.
+The filesystem half of `hozo audit` also needs `strace` (`tests/test_audit.py::needs_strace`).
 
 ## Commits
 
 Conventional Commits (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`, `chore:`). Scopes:
-`profiles`, `policy`, `bwrap`, `seatbelt`, `env`, `proxy`, `cli`.
+`profiles`, `policy`, `bwrap`, `seatbelt`, `env`, `proxy`, `cli`, `audit`.
