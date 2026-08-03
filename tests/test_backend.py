@@ -1,3 +1,5 @@
+import platform
+
 import pytest
 
 import hozo
@@ -25,8 +27,8 @@ class _StubBackend(Backend):
 
 
 def test_get_backend_default():
-    backend = get_backend()
-    assert backend.name == "bwrap" and isinstance(backend, BubblewrapBackend)
+    expected = {"Linux": "bwrap", "Darwin": "seatbelt"}[platform.system()]
+    assert get_backend().name == expected
 
 
 def test_get_unknown_backend_errors():
@@ -36,7 +38,7 @@ def test_get_unknown_backend_errors():
 
 def test_bwrap_backend_describe(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    assert get_backend().describe(policy).startswith("bwrap argv:")
+    assert BubblewrapBackend().describe(policy).startswith("bwrap argv:")
 
 
 def test_runner_delegates_to_injected_backend(tmp_path):

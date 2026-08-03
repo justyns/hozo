@@ -8,8 +8,8 @@ based: unbound paths are simply denied, so ``$HOME`` stays the real home path an
 explicitly-bound subpaths under it are reachable.
 
 Two facts drive the profile (both cost real projects a bug):
-  * dylibs and the dyld shared cache need ``file-read*`` AND ``file-map-executable`` — the
-    latter is a distinct operation. The cache lives in the OS cryptex on Ventura+ .
+  * dylibs need ``file-read*`` AND ``file-map-executable`` — the latter is a distinct
+    operation, so a plain read grant is not enough to run a binary.
   * Seatbelt matches file rules against the symlink-resolved path, so every bind source is
     ``realpath``'d to its ``/private/...`` form before it lands in a rule.
 SBPL cannot filter egress by hostname (the host token is only ``localhost`` or ``*``), so
@@ -33,46 +33,30 @@ from .proxy import BackgroundProxy
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
-# The "nothing runs without these" grants, vendored rather than (import "system.sb") — the
-# bundled profile can fail to compile across releases. Mirrors bwrap's _merged_usr_links().
+# Apple's own base profile supplies the platform plumbing — dyld and the shared cache, the
+# mach services and /dev nodes every process needs — and tracks OS changes so this file
+# doesn't have to. Hand-vendoring that set instead looked more robust and wasn't: the
+# vendored version couldn't start /bin/echo on macOS 26. Keep the split as: system.sb owns
+# the platform, the rules below own hozo's policy.
 _HEADER = """\
 (version 1)
 (deny default)
+(import "system.sb")
 (allow process-fork)
 (allow process-exec*)
-(allow sysctl-read)
 (allow signal (target same-sandbox))
 (allow file-read-metadata)
+; Where executables and their libraries live; Homebrew's prefix differs by arch.
 (allow file-read* file-map-executable
-  (subpath "/usr/lib")
-  (subpath "/usr/bin")
-  (subpath "/usr/sbin")
+  (subpath "/usr")
   (subpath "/bin")
   (subpath "/sbin")
-  (subpath "/System/Library/dyld")
-  (subpath "/System/Cryptexes/OS")
-  (subpath "/System/Cryptexes/App")
-  (subpath "/System/Volumes/Preboot/Cryptexes/OS")
-  (subpath "/System/Volumes/Preboot/Cryptexes/App/System")
+  (subpath "/System")
   (subpath "/opt/homebrew")
   (subpath "/usr/local"))
 (allow file-read*
-  (subpath "/System/Library/Frameworks")
-  (subpath "/System/Library/PrivateFrameworks")
-  (subpath "/usr/share")
   (subpath "/private/etc")
-  (subpath "/Library/Apple")
-  (subpath "/private/var/db/timezone"))
-(allow mach-lookup
-  (global-name "com.apple.system.opendirectoryd.libinfo")
-  (global-name "com.apple.system.opendirectoryd.membership")
-  (global-name "com.apple.system.notification_center")
-  (global-name "com.apple.logd")
-  (global-name "com.apple.system.logger")
-  (global-name "com.apple.CoreServices.coreservicesd")
-  (global-name "com.apple.bsd.dirhelper")
-  (global-name "com.apple.SecurityServer")
-  (global-name "com.apple.trustd.agent"))
+  (subpath "/Library/Apple"))
 (allow file*
   (subpath "/dev/fd")
   (literal "/dev/null")

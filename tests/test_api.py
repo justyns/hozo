@@ -33,7 +33,7 @@ def test_inline_overrides_beat_profiles(tmp_path):
 
 def test_run_returns_result(tmp_path):
     if not hozo.check_available():
-        pytest.skip("bwrap not installed")
+        pytest.skip("no sandbox runtime installed")
     res = hozo.run(
         hozo.SandboxRequest(command=["sh", "-c", "echo hi"], project=str(tmp_path)),
         capture=True,

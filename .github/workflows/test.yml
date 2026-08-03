@@ -2,17 +2,30 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # a macOS failure shouldn't hide the Linux result (or vice versa)
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
           fetch-depth: 0  # full history + tags for dynamic versioning
+
+      # macOS needs nothing here: sandbox-exec ships with the OS.
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 strips capabilities from unprivileged user namespaces. bwrap isn't
+          # setuid on the runner, so without this it can't even write its uid map.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
@@ -22,13 +35,16 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # Style is platform-independent, so it only needs to run once.
       - name: Ruff
+        if: runner.os == 'Linux'
         run: uv run ruff check src tests
 
       - name: Black (format check)
+        if: runner.os == 'Linux'
         run: uv run black --check src tests
 
       - name: Tests
-        # bwrap isn't installed on the runner, so the integration tests self-skip;
-        # the unit tests (policy, env, profiles, argv rendering, proxy, ...) run.
-        run: uv run pytest
+        # Both runtimes are present now, so the integration tests execute for real instead
+        # of self-skipping. -rs lists anything that still skips.
+        run: uv run pytest -rs

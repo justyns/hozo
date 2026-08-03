@@ -1,9 +1,19 @@
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 
 import hozo
 from hozo import proxy
+
+
+@pytest.fixture
+def sock_path():
+    """A Unix socket path short enough for the ~104-byte sun_path limit — pytest's
+    tmp_path already exceeds it on macOS, where TMPDIR is a long /var/folders path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        yield Path(tmp) / "p.sock"
 
 
 @pytest.mark.parametrize(
@@ -35,7 +45,7 @@ async def _connect(sock_path, target):
     return status, writer
 
 
-def test_proxy_allows_listed_host(tmp_path):
+def test_proxy_allows_listed_host(sock_path):
     async def main():
         async def echo(reader, writer):
             await reader.read(64)
@@ -46,10 +56,10 @@ def test_proxy_allows_listed_host(tmp_path):
         upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
         port = upstream.sockets[0].getsockname()[1]
         # default ports are 80/443, so allow the ephemeral upstream port explicitly
-        prox = proxy.ConnectProxy(tmp_path / "p.sock", allowed_hosts=[f"localhost:{port}"])
+        prox = proxy.ConnectProxy(sock_path, allowed_hosts=[f"localhost:{port}"])
         await prox.start()
         try:
-            status, writer = await _connect(tmp_path / "p.sock", f"localhost:{port}")
+            status, writer = await _connect(sock_path, f"localhost:{port}")
             writer.close()
             assert b"200" in status
         finally:
@@ -59,12 +69,12 @@ def test_proxy_allows_listed_host(tmp_path):
     asyncio.run(main())
 
 
-def test_proxy_blocks_unlisted_host(tmp_path):
+def test_proxy_blocks_unlisted_host(sock_path):
     async def main():
-        prox = proxy.ConnectProxy(tmp_path / "p.sock", allowed_hosts=["example.org"])
+        prox = proxy.ConnectProxy(sock_path, allowed_hosts=["example.org"])
         await prox.start()
         try:
-            status, writer = await _connect(tmp_path / "p.sock", "localhost:9")
+            status, writer = await _connect(sock_path, "localhost:9")
             writer.close()
             assert b"403" in status
         finally:
@@ -73,7 +83,7 @@ def test_proxy_blocks_unlisted_host(tmp_path):
     asyncio.run(main())
 
 
-def test_proxy_allows_listed_ip(tmp_path):
+def test_proxy_allows_listed_ip(sock_path):
     async def main():
         async def echo(reader, writer):
             await reader.read(64)
@@ -83,10 +93,10 @@ def test_proxy_allows_listed_ip(tmp_path):
 
         upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
         port = upstream.sockets[0].getsockname()[1]
-        prox = proxy.ConnectProxy(tmp_path / "p.sock", allowed_hosts=[f"127.0.0.1:{port}"])
+        prox = proxy.ConnectProxy(sock_path, allowed_hosts=[f"127.0.0.1:{port}"])
         await prox.start()
         try:
-            status, writer = await _connect(tmp_path / "p.sock", f"127.0.0.1:{port}")
+            status, writer = await _connect(sock_path, f"127.0.0.1:{port}")
             writer.close()
             assert b"200" in status  # a listed IP is reachable
         finally:
@@ -124,13 +134,15 @@ def test_proxy_tcp_loopback_mode():
     asyncio.run(main())
 
 
-@pytest.mark.skipif(not hozo.check_available(), reason="bwrap not installed")
+@pytest.mark.skipif(not hozo.check_available(), reason="no sandbox runtime installed")
 def test_proxy_mode_end_to_end(tmp_path):
-    # Full lifecycle: temp socket + bridge written, proxy started, sandbox runs the
-    # bridge-wrapped command, env injected, then torn down. No external network.
+    # Full lifecycle: proxy started, sandbox runs the command with egress wired up, then
+    # torn down. No external network. The port is the fixed bridge port on Linux and an
+    # ephemeral loopback port on macOS, so only its shape is asserted.
     result = hozo.run(
         hozo.SandboxRequest(command=["printenv", "HTTP_PROXY"], project=str(tmp_path), profiles=["proxy"]),
         capture=True,
     )
     assert result.returncode == 0
-    assert "127.0.0.1:12345" in result.stdout
+    host, _, port = result.stdout.strip().removeprefix("http://").partition(":")
+    assert host == "127.0.0.1" and port.isdigit()

@@ -25,9 +25,11 @@ def test_profile_denies_by_default(tmp_path):
 def test_system_essentials_present(tmp_path):
     prof = _profile(tmp_path)
     assert "(allow process-exec*)" in prof
-    # dyld cache + dylibs need file-read* AND the distinct file-map-executable op
+    # dylibs need file-read* AND the distinct file-map-executable op
     assert "file-map-executable" in prof
-    assert '(subpath "/System/Volumes/Preboot/Cryptexes/OS")' in prof
+    # Apple's base profile owns the platform plumbing (dyld, the shared cache, mach services)
+    assert '(import "system.sb")' in prof
+    assert '(subpath "/usr")' in prof
 
 
 def test_ro_and_rw_binds_land_in_the_right_blocks():

@@ -20,7 +20,7 @@ def test_profile_list(capsys):
 def test_explain_verb(capsys):
     assert cli.main(["explain", "+untrusted", "--", "echo", "hi"]) == 0
     out = capsys.readouterr().out
-    assert "Workdir:" in out and "bwrap" in out
+    assert "Workdir:" in out and "Backend:" in out
 
 
 def test_run_missing_command_errors():
@@ -31,17 +31,17 @@ def test_unknown_option_errors():
     assert cli.main(["--frobnicate", "--", "true"]) == 2
 
 
-needs_bwrap = pytest.mark.skipif(not hozo.check_available(), reason="bwrap not installed")
+needs_sandbox = pytest.mark.skipif(not hozo.check_available(), reason="no sandbox runtime installed")
 
 
-@needs_bwrap
+@needs_sandbox
 def test_run_success_returncode(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     expected = os.getcwd()  # project defaults to cwd; mounted in place
     assert cli.main(["+untrusted", "--", "sh", "-c", f'test "$(pwd)" = {expected}']) == 0
 
 
-@needs_bwrap
+@needs_sandbox
 def test_run_failure_returncode(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["+untrusted", "--", "false"]) == 1
