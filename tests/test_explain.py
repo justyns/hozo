@@ -7,7 +7,7 @@ def test_explain_lists_sections(tmp_path):
     text = explain.explain_policy(p, environ={"TERM": "xterm"})
     assert "Profiles:" in text and "base" in text
     assert "Network:" in text
-    assert "/work" in text
+    assert str(tmp_path) in text
     assert "Env:" in text and "HOME" in text
     assert "bwrap" in text
 

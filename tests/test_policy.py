@@ -26,13 +26,14 @@ def test_base_only(tmp_path):
     assert p.home == str(Path.home())
     assert "LC_*" in p.env_allow  # deny-all + small allowlist scrubs secrets
     assert p.command == ["echo", "hi"]
-    work = [b for b in p.binds if b.target == "/work"]
-    assert work and work[0].source == str(tmp_path) and work[0].mode == "rw"
+    assert p.cwd == str(tmp_path)
+    work = [b for b in p.binds if b.source == str(tmp_path)]
+    assert work and work[0].mode == "rw"
 
 
 def test_no_project_bind(tmp_path):
     p = policy.resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), bind_project=False))
-    assert all(b.target != "/work" for b in p.binds)
+    assert all(b.source != str(tmp_path) for b in p.binds)
 
 
 @pytest.mark.parametrize(
@@ -59,17 +60,17 @@ def test_network_request_override(make_profile):
 
 
 def test_bind_conflict_raises(make_profile):
-    make_profile("a", "binds:\n  - {source: /x, target: /t}\n")
-    make_profile("b", "binds:\n  - {source: /y, target: /t}\n")
+    make_profile("a", "binds:\n  - {source: /x, mode: ro}\n")
+    make_profile("b", "binds:\n  - {source: /x, mode: rw}\n")
     with pytest.raises(MergeConflictError):
         policy.resolve_policy(SandboxRequest(command=["x"], profiles=["a", "b"]))
 
 
 def test_bind_conflict_override(make_profile):
-    make_profile("a", "binds:\n  - {source: /x, target: /t}\n")
-    make_profile("b", "binds:\n  - {source: /y, target: /t}\n")
+    make_profile("a", "binds:\n  - {source: /x, mode: ro}\n")
+    make_profile("b", "binds:\n  - {source: /x, mode: rw}\n")
     p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["a", "b"], override=True))
-    assert [b for b in p.binds if b.target == "/t"][0].source == "/y"
+    assert [b for b in p.binds if b.source == "/x"][0].mode == "rw"
 
 
 def test_env_set_conflict_raises(make_profile):
@@ -108,14 +109,14 @@ def test_relative_project_absolutized(monkeypatch, tmp_path):
     sub.mkdir()
     monkeypatch.chdir(sub)
     p = policy.resolve_policy(SandboxRequest(command=["true"], project=".."))
-    assert next(b for b in p.binds if b.target == "/work").source == str(tmp_path)
+    assert any(b.source == str(tmp_path) and b.mode == "rw" for b in p.binds)
 
 
 def test_required_bind_wins_over_optional(make_profile):
-    make_profile("opt", "binds:\n  - {source: /srv, target: /srv, optional: true}\n")
-    make_profile("req", "binds:\n  - {source: /srv, target: /srv, optional: false}\n")
+    make_profile("opt", "binds:\n  - {source: /srv, optional: true}\n")
+    make_profile("req", "binds:\n  - {source: /srv, optional: false}\n")
     p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["opt", "req"]))
-    assert next(b for b in p.binds if b.target == "/srv").optional is False
+    assert next(b for b in p.binds if b.source == "/srv").optional is False
 
 
 def test_clear_env_false_honored(make_profile):
@@ -127,19 +128,19 @@ def test_cwd_project_mounts_in_place(make_profile):
     make_profile("inplace", 'process: {cwd: "{project}"}\n')
     p = policy.resolve_policy(SandboxRequest(command=["x"], project="/home/u/proj", profiles=["inplace"]))
     assert p.cwd == "/home/u/proj"
-    work = [b for b in p.binds if b.target == "/home/u/proj"][0]
-    assert work.source == "/home/u/proj" and work.mode == "rw"
+    work = [b for b in p.binds if b.source == "/home/u/proj"][0]
+    assert work.mode == "rw"
 
 
 def test_home_placeholder_and_identity(make_profile):
     import getpass
     from pathlib import Path
 
-    make_profile("realhome", 'home: "{home}"\nbinds:\n  - {source: "{home}/.foo", target: "{home}/.foo", mode: rw}\n')
+    make_profile("realhome", 'home: "{home}"\nbinds:\n  - {source: "{home}/.foo", mode: rw}\n')
     p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["realhome"]))
     home = str(Path.home())
     assert p.home == home
     assert p.env_set["HOME"] == home  # HOME follows the sandbox home
     assert p.env_set["USER"] == getpass.getuser()  # real user by default
-    foo = [b for b in p.binds if b.target == f"{home}/.foo"][0]
-    assert foo.source == f"{home}/.foo"  # same path inside and out
+    foo = [b for b in p.binds if b.source == f"{home}/.foo"][0]
+    assert foo.mode == "rw"  # writable, mounted in place

@@ -1,15 +1,16 @@
 name: base
 description: >-
   Foundation layer applied to every run: the default read-only system mounts, a private
-  throwaway home, the /work working dir, and the scrubbed environment. (Merged-/usr symlinks
-  and /proc, /dev, tmpfs /tmp are host-specific, so the renderer still adds those.)
+  throwaway home, the project mounted in place as the working dir, and the scrubbed
+  environment. (Merged-/usr symlinks and /proc, /dev, tmpfs /tmp are host-specific, so the
+  renderer still adds those.)
 
 # No network.mode here by default, so should be none by default
 
 process:
   # Remove all environment variables except for the allowlist below
   clear_env: true
-  cwd: /work
+  cwd: "{project}"
 
 # Default $HOME to the real home path (an empty dir in the sandbox), so it works even
 # when home isn't /home/<user> (e.g. /root, /Users/...). Contents aren't exposed.
@@ -26,16 +27,16 @@ env:
     - TZ
 
 binds:
-  - { source: /usr, target: /usr, mode: ro }
-  - { source: /etc/ssl, target: /etc/ssl, mode: ro, optional: true }
-  - { source: /etc/ca-certificates, target: /etc/ca-certificates, mode: ro, optional: true }
-  - { source: /etc/pki, target: /etc/pki, mode: ro, optional: true }
-  - { source: /etc/passwd, target: /etc/passwd, mode: ro, optional: true }
-  - { source: /etc/group, target: /etc/group, mode: ro, optional: true }
-  - { source: /etc/hosts, target: /etc/hosts, mode: ro, optional: true }
-  - { source: /etc/nsswitch.conf, target: /etc/nsswitch.conf, mode: ro, optional: true }
-  - { source: /etc/localtime, target: /etc/localtime, mode: ro, optional: true }
-  - { source: /etc/resolv.conf, target: /etc/resolv.conf, mode: ro, optional: true }
+  - { source: /usr, mode: ro }
+  - { source: /etc/ssl, mode: ro, optional: true }
+  - { source: /etc/ca-certificates, mode: ro, optional: true }
+  - { source: /etc/pki, mode: ro, optional: true }
+  - { source: /etc/passwd, mode: ro, optional: true }
+  - { source: /etc/group, mode: ro, optional: true }
+  - { source: /etc/hosts, mode: ro, optional: true }
+  - { source: /etc/nsswitch.conf, mode: ro, optional: true }
+  - { source: /etc/localtime, mode: ro, optional: true }
+  - { source: /etc/resolv.conf, mode: ro, optional: true }
 
 special:
   proc: true

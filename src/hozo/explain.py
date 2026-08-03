@@ -42,7 +42,7 @@ def explain_policy(
     lines.append("Binds:")
     for bind in policy.binds:
         optional = " (optional)" if bind.optional else ""
-        lines.append(f"  {bind.mode:2}  {bind.source} -> {bind.target}{optional}")
+        lines.append(f"  {bind.mode:2}  {bind.source}{optional}")
     writable = [bind.source for bind in policy.binds if bind.mode == "rw"]
     lines.append("Writable host paths: " + (", ".join(writable) or "(none)"))
 

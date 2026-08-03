@@ -24,7 +24,6 @@ _BIND_MODES = ("ro", "rw")
 @dataclass
 class Bind:
     source: str
-    target: str
     mode: str = "ro"
     optional: bool = False
 
@@ -73,15 +72,12 @@ def _parse_bind(raw, source: str) -> Bind:
     if not isinstance(raw, dict):
         raise ProfileError(f"{source}: each bind must be a mapping")
     src = raw.get("source")
-    target = raw.get("target")
-    if not isinstance(src, str) or not src:
-        raise ProfileError(f"{source}: bind missing 'source'")
-    if not isinstance(target, str) or not _abs_or_placeholder(target):
-        raise ProfileError(f"{source}: bind 'target' must be an absolute path or placeholder: {target!r}")
+    if not isinstance(src, str) or not _abs_or_placeholder(src):
+        raise ProfileError(f"{source}: bind 'source' must be an absolute path or placeholder: {src!r}")
     mode = raw.get("mode", "ro")
     if mode not in _BIND_MODES:
         raise ProfileError(f"{source}: bind 'mode' must be 'ro' or 'rw': {mode!r}")
-    return Bind(source=src, target=target, mode=mode, optional=bool(raw.get("optional", False)))
+    return Bind(source=src, mode=mode, optional=bool(raw.get("optional", False)))
 
 
 def parse_profile(data, source: str) -> Profile:

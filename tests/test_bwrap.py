@@ -31,10 +31,10 @@ def test_network_host_keeps_net(tmp_path):
     assert "--unshare-net" not in _argv(tmp_path, network="host")
 
 
-def test_project_bound_at_work_and_chdir(tmp_path):
+def test_project_bound_in_place_and_chdir(tmp_path):
     argv = _argv(tmp_path)
-    assert _has_seq(argv, ["--bind", str(tmp_path), "/work"])
-    assert _has_seq(argv, ["--chdir", "/work"])
+    assert _has_seq(argv, ["--bind", str(tmp_path), str(tmp_path)])
+    assert _has_seq(argv, ["--chdir", str(tmp_path)])
 
 
 def test_usr_bind_and_merged_usr(tmp_path):

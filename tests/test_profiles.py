@@ -70,9 +70,9 @@ def test_bad_network_mode_raises():
         profiles.parse_profile({"name": "x", "network": {"mode": "wifi"}}, "<test>")
 
 
-def test_bind_target_must_be_absolute():
+def test_bind_source_must_be_absolute():
     with pytest.raises(ProfileError):
-        profiles.parse_profile({"name": "x", "binds": [{"source": "/a", "target": "rel"}]}, "<test>")
+        profiles.parse_profile({"name": "x", "binds": [{"source": "rel"}]}, "<test>")
 
 
 def test_invalid_yaml_raises():

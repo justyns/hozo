@@ -70,7 +70,7 @@ def build_bwrap_argv(policy: ResolvedPolicy, *, proxy: ProxyMount | None = None)
         argv += ["--tmpfs", path]
 
     for bind in policy.binds:
-        argv += [_bind_flag(bind), bind.source, bind.target]
+        argv += [_bind_flag(bind), bind.source, bind.source]
 
     if use_proxy:
         argv += ["--ro-bind", proxy.socket_path, PROXY_SOCKET_TARGET]

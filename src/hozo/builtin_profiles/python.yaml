@@ -6,11 +6,9 @@ description: >-
 
 binds:
   - source: "~/.cache/uv"
-    target: "{home}/.cache/uv"
     mode: rw
     optional: true
   - source: "~/.cache/pip"
-    target: "{home}/.cache/pip"
     mode: rw
     optional: true
 

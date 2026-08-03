@@ -132,8 +132,8 @@ def _parse_flags(tokens: list[str]) -> tuple[dict, list[str]]:
 
 
 def _build_request(profiles: list[str], command: list[str], opts: dict) -> SandboxRequest:
-    binds = [Bind(source=os.path.abspath(p), target=os.path.abspath(p), mode="ro") for p in opts["allow_read"]]
-    binds += [Bind(source=os.path.abspath(p), target=os.path.abspath(p), mode="rw") for p in opts["allow_write"]]
+    binds = [Bind(source=os.path.abspath(p), mode="ro") for p in opts["allow_read"]]
+    binds += [Bind(source=os.path.abspath(p), mode="rw") for p in opts["allow_write"]]
     return SandboxRequest(
         command=command,
         project=opts["project"],

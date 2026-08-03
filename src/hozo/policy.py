@@ -68,17 +68,15 @@ def _absolute(value: str, label: str) -> str:
 
 def _expand_bind(bind: Bind, project: str) -> Bind:
     source = expand_path(bind.source, project=Path(project))
-    target = expand_path(bind.target, project=Path(project))
-    for label, value in (("source", source), ("target", target)):
-        _absolute(value, f"bind {label}")
-    return Bind(source=source, target=target, mode=bind.mode, optional=bind.optional)
+    _absolute(source, "bind source")
+    return Bind(source=source, mode=bind.mode, optional=bind.optional)
 
 
 def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
     for i, existing in enumerate(binds):
-        if existing.target != bind.target:
+        if existing.source != bind.source:
             continue
-        if existing.source == bind.source and existing.mode == bind.mode:
+        if existing.mode == bind.mode:
             # same mount from two layers; a required bind wins over an optional one
             existing.optional = existing.optional and bind.optional
             return
@@ -86,8 +84,7 @@ def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
             binds[i] = bind
             return
         raise MergeConflictError(
-            f"bind target {bind.target!r} requested by two layers with different source/mode: "
-            f"{existing.source!r}({existing.mode}) vs {bind.source!r}({bind.mode})"
+            f"bind {bind.source!r} requested by two layers with different modes: {existing.mode} vs {bind.mode}"
         )
     binds.append(bind)
 
@@ -98,7 +95,7 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
         profiles_applied=[layer.name for layer in layers],
         network_mode="none",
         clear_env=True,  # secure default; a layer can opt out with clear_env: false
-        cwd="/work",
+        cwd="{project}",
         home=None,
         binds=[],
         tmpfs=[],
@@ -171,10 +168,9 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
         policy.home = _absolute(expand_path(policy.home, project=proj), "home")
     policy.prepend_path = [expand_path(p, project=proj) for p in policy.prepend_path]
 
-    # The project is mounted read-write at the working dir (default /work; a profile can set
-    # cwd: "{project}" to mount it in place at its real host path — e.g. for path-keyed tools).
+    # The project is mounted read-write in place at its real host path; cwd defaults to it.
     if request.bind_project:
-        _add_bind(policy.binds, Bind(source=project, target=policy.cwd, mode="rw"), override=True)
+        _add_bind(policy.binds, Bind(source=project, mode="rw"), override=True)
 
     # Inline request fields win unconditionally over profiles.
     policy.env_set.update(request.env)
