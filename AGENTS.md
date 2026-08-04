@@ -18,6 +18,12 @@ Pipeline: load profiles → merge → backend (`backend.py`: the `Backend` ABC +
 renderer). Binds are **identity-only** — a host path is always made available at the same
 path in the sandbox (no source→target remapping), so both backends can express every bind.
 
+Path placeholders (`{home}`, `{project}`, `{user}`) expand during policy resolution, in
+`env: set:` values as well as binds. `{scratch}` is the exception: only a backend can create
+the per-run temp dir, so resolution defers it and `build_env` substitutes it. Use it for
+tools that insist on writing outside their config dir; `+claude` points `CLAUDE_CODE_TMPDIR`
+at it.
+
 `audit.py` (`hozo audit`) is the dynamic counterpart to `explain`: run widened, report what
 the real policy would deny. It deliberately adds no plumbing to the layers above, leaning on
 four existing properties instead, so don't break these without checking here first:

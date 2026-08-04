@@ -36,6 +36,12 @@ def test_set_overrides_and_path_order():
     assert out["PATH"] == "/opt/a:/usr/bin:/bin"
 
 
+def test_scratch_substituted_by_the_backend():
+    p = make_policy(env_set={"T": "{scratch}/claude"})
+    assert env.build_env(p, environ={}, scratch="/run/x")["T"] == "/run/x/claude"
+    assert env.build_env(p, environ={})["T"] == "{scratch}/claude"  # explain: no run, no dir
+
+
 def test_clear_env_false_copies_all():
     p = make_policy(clear_env=False)
     out = env.build_env(p, environ={"FOO": "1", "SECRET": "x"})

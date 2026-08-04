@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import HozoError, MergeConflictError
-from .paths import expand_path
+from .paths import SCRATCH_PLACEHOLDER, expand_path
 from .profiles import NETWORK_MODES, Bind, Profile, default_base_name, load_profile
 from .proxy import valid_port_spec
 
@@ -162,6 +162,12 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
 
     # Inline request fields win unconditionally over profiles.
     policy.env_set.update(request.env)
+
+    # Braced values only, so a value that merely starts with '~' stays literal.
+    policy.env_set = {
+        key: expand_path(value, project=proj, defer=(SCRATCH_PLACEHOLDER,)) if "{" in value else value
+        for key, value in policy.env_set.items()
+    }
     if request.network is not None:
         if request.network not in _NETWORK_RANK:
             raise HozoError(f"invalid network mode: {request.network!r}")

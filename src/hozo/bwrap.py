@@ -39,6 +39,9 @@ _MERGED_USR_LINKS = ("/bin", "/sbin", "/lib", "/lib64")
 # Stand-in paths for `explain`: the real socket and script are per-run temporaries.
 _EXPLAIN_MOUNT = ProxyMount("<host-proxy.sock>", "<bridge.py>")
 
+# The in-sandbox per-run temp dir behind the {scratch} placeholder.
+SCRATCH_DIR = "/tmp/hozo-scratch"
+
 
 def check_available() -> bool:
     # Not cached: bwrap can be installed/removed during a long-lived library process.
@@ -73,6 +76,9 @@ def build_bwrap_argv(policy: ResolvedPolicy, *, proxy: ProxyMount | None = None)
 
     for bind in policy.binds:
         argv += [_bind_flag(bind), bind.source, bind.source]
+
+    # After the tmpfs/bind ops, so neither mounts over it.
+    argv += ["--dir", SCRATCH_DIR]
 
     if use_proxy:
         argv += ["--ro-bind", proxy.socket_path, PROXY_SOCKET_TARGET]
@@ -130,7 +136,7 @@ class BubblewrapBackend(Backend):
                 stack.enter_context(BackgroundProxy(socket_path, policy.proxy_allow_hosts))
                 mount = ProxyMount(str(socket_path), bridge_script_path())
             argv = build_bwrap_argv(policy, proxy=mount)
-            env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None)
+            env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None, scratch=SCRATCH_DIR)
             return self._spawn(argv, env, policy, capture=capture)
 
 

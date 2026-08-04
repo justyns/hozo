@@ -1,10 +1,11 @@
 from pathlib import Path
 
 import pytest
+from conftest import policy_with_base
 
 from hozo import policy
 from hozo.errors import MergeConflictError
-from hozo.paths import profiles_dir
+from hozo.paths import SCRATCH_PLACEHOLDER, profiles_dir
 from hozo.policy import SandboxRequest
 
 
@@ -84,6 +85,26 @@ def test_inline_env_wins(make_profile):
     make_profile("a", "env:\n  set: {FOO: '1'}\n")
     p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["a"], env={"FOO": "2"}))
     assert p.env_set["FOO"] == "2"
+
+
+def test_env_values_expand_placeholders(make_profile, tmp_path):
+    make_profile("a", "env:\n  set: {CACHE: '{home}/c', WORK: '{project}/w', PLAIN: '~keep'}\n")
+    p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["a"], project=str(tmp_path)))
+    assert p.env_set["CACHE"] == f"{Path.home()}/c"
+    assert p.env_set["WORK"] == f"{tmp_path}/w"
+    assert p.env_set["PLAIN"] == "~keep"  # unbraced values are left alone
+
+
+def test_scratch_is_deferred_to_the_backend(make_profile, tmp_path):
+    make_profile("a", "env:\n  set: {T: '{scratch}/x', H: '{home}'}\n")
+    p = policy.resolve_policy(SandboxRequest(command=["x"], profiles=["a"], project=str(tmp_path)))
+    assert p.env_set["T"] == "{scratch}/x"  # only a backend knows the per-run dir
+    assert p.env_set["H"] == str(Path.home())
+
+
+def test_claude_temp_root_is_the_per_run_scratch(tmp_path):
+    p = policy_with_base("base-macos", tmp_path, profiles=["claude"])
+    assert p.env_set["CLAUDE_CODE_TMPDIR"] == SCRATCH_PLACEHOLDER
 
 
 def test_no_base_skips_base(make_profile):

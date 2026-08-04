@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import policy_with_base
 
 import hozo
 from hozo import audit, cli
@@ -32,9 +33,8 @@ def _rw(path):
 
 
 def _policy(tmp_path, **kw):
-    kw.setdefault("command", ["true"])
-    kw.setdefault("project", str(tmp_path))
-    return resolve_policy(SandboxRequest(**kw))
+    # These assert against base's grants: /usr ro, the /etc/* files, proc + dev.
+    return policy_with_base("base", tmp_path, **kw)
 
 
 # --- parse_strace -----------------------------------------------------------------
@@ -138,6 +138,10 @@ def test_counts_survive_the_rollup():
 # --- the insecure profile ---------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="macOS ships /etc and /var as symlinks into /private",
+)
 def test_insecure_profile_lists_no_symlinked_top_level_dir():
     for bind in load_profile("insecure").binds:
         assert not os.path.islink(bind.source), f"{bind.source} is a symlink"
