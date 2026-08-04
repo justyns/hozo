@@ -52,6 +52,12 @@ def test_usr_bind_and_merged_usr(tmp_path):
         assert "--symlink" in argv
 
 
+def test_scratch_dir_created_after_the_tmpfs(tmp_path):
+    argv = _argv(tmp_path)
+    assert _has_seq(argv, ["--dir", bwrap.SCRATCH_DIR])
+    assert argv.index(bwrap.SCRATCH_DIR) > argv.index("--tmpfs")  # a tmpfs would mount over it
+
+
 def test_no_env_flags_in_argv(tmp_path):
     # env is bwrap's process environment, not --setenv args, so it never hits the cmdline
     argv = _argv(tmp_path)

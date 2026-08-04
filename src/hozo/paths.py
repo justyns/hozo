@@ -37,13 +37,19 @@ _RESOLVERS = {
     "user": getpass.getuser,
 }
 
+# Only a backend knows the per-run temp dir, so build_env fills this in after resolution.
+SCRATCH_PLACEHOLDER = "{scratch}"
 
-def expand_path(value: str, *, project: Path | None = None) -> str:
-    """Expand Hozo placeholders and ``~`` in a path. Unknown placeholders raise."""
+
+def expand_path(value: str, *, project: Path | None = None, defer: tuple[str, ...] = ()) -> str:
+    """Expand Hozo placeholders and ``~`` in a path. Unknown placeholders raise; anything
+    in ``defer`` is left for a later pass."""
 
     # TODO: Is it worth using jinja or something for this?
     def resolve(match: re.Match) -> str:
         name = match.group(1)
+        if match.group(0) in defer:
+            return match.group(0)
         if name == "project":
             if project is None:
                 raise HozoError(f"{{project}} used but no project path is available: {value!r}")

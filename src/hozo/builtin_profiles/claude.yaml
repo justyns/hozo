@@ -14,6 +14,9 @@ network:
   mode: proxy
 
 env:
+  set:
+    # Defaults to /tmp/claude-$UID, which Seatbelt denies.
+    CLAUDE_CODE_TMPDIR: "{scratch}"
   prepend_path:
     - "{home}/.local/bin"
 
@@ -31,3 +34,5 @@ proxy:
   allow_hosts:
     - api.anthropic.com
     - statsig.anthropic.com
+    # OAuth, for /login and token refresh.
+    - platform.claude.com

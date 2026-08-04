@@ -1,21 +1,28 @@
+from pathlib import Path
+
+import pytest
+from conftest import policy_with_base
+
 import hozo
 from hozo import seatbelt
+from hozo.errors import ProfileError
 from hozo.policy import SandboxRequest, resolve_policy
 from hozo.profiles import Bind
 
 
-def _profile(tmp_path, **req_kw):
-    req_kw.setdefault("command", ["true"])
-    req_kw.setdefault("project", str(tmp_path))
-    return seatbelt.build_seatbelt_profile(resolve_policy(SandboxRequest(**req_kw)))
+def _macos_policy(tmp_path, **kw):
+    # The Linux default base sets tmpfs:, which the renderer rejects.
+    return policy_with_base("base-macos", tmp_path, **kw)
 
 
-def _bare(binds, **req_kw):
-    # A policy with no base and no project bind, so only the given binds appear.
-    req_kw.setdefault("command", ["x"])
-    req_kw.setdefault("project", "/proj")
-    req = SandboxRequest(no_base=True, bind_project=False, binds=binds, **req_kw)
-    return seatbelt.build_seatbelt_profile(resolve_policy(req))
+def _profile(tmp_path, **kw):
+    return seatbelt.build_seatbelt_profile(_macos_policy(tmp_path, **kw))
+
+
+def _bare(binds):
+    # No base and no project bind, so only the given binds appear in the profile.
+    policy = policy_with_base(None, Path("/proj"), command=["x"], bind_project=False, binds=binds)
+    return seatbelt.build_seatbelt_profile(policy)
 
 
 def test_profile_denies_by_default(tmp_path):
@@ -32,6 +39,13 @@ def test_system_essentials_present(tmp_path):
     assert '(subpath "/usr")' in prof
 
 
+def test_profile_grants_the_controlling_tty(tmp_path):
+    # Without these, file-ioctl on the tty is denied and raw mode fails.
+    prof = _profile(tmp_path)
+    assert r'(regex #"^/dev/ttys[0-9]+$")' in prof
+    assert '(literal "/dev/ptmx")' in prof
+
+
 def test_ro_and_rw_binds_land_in_the_right_blocks():
     prof = _bare([Bind(source="/opt/ro", mode="ro"), Bind(source="/opt/rw", mode="rw")])
     ro_section = prof.split("(allow file-read* file-write*")[0]  # everything before the rw block
@@ -40,17 +54,24 @@ def test_ro_and_rw_binds_land_in_the_right_blocks():
     assert '(subpath "/opt/rw")' in prof  # ...it's in the rw block
 
 
-def test_tmpfs_and_scratch_are_writable(tmp_path):
-    p = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), no_base=True, bind_project=False))
+def test_tmpfs_is_rejected(tmp_path):
+    # Granting it would expose the real host path.
+    p = _macos_policy(tmp_path)
     p.tmpfs = ["/tmp"]
-    prof = seatbelt.build_seatbelt_profile(p, writable_scratch=("/var/scratch",))
+    with pytest.raises(ProfileError, match="tmpfs"):
+        seatbelt.build_seatbelt_profile(p)
+
+
+def test_rw_binds_are_writable(tmp_path):
+    prof = _profile(tmp_path, binds=[Bind(source="/var/scratch", mode="rw")])
     rw_block = prof.split("(allow file-read* file-write*", 1)[1]
-    assert '(subpath "/tmp")' in rw_block and '(subpath "/var/scratch")' in rw_block
+    assert '(subpath "/var/scratch")' in rw_block
 
 
 def test_network_none_has_no_egress(tmp_path):
     prof = _profile(tmp_path, network="none")
     assert "network-outbound" not in prof
+    assert "network-bind" not in prof  # not even a loopback listener
     assert "network: none" in prof
 
 
@@ -61,13 +82,20 @@ def test_network_host_allows_network_and_dns(tmp_path):
 
 
 def test_proxy_mode_pins_egress_to_loopback_port(tmp_path):
-    p = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), profiles=["proxy"]))
+    p = _macos_policy(tmp_path, profiles=["proxy"])
     prof = seatbelt.build_seatbelt_profile(p, proxy_port=45678)
     assert '(allow network-outbound (remote tcp "localhost:45678"))' in prof
 
 
+def test_proxy_mode_allows_a_loopback_listener(tmp_path):
+    p = _macos_policy(tmp_path, profiles=["proxy"])
+    for prof in (seatbelt.build_seatbelt_profile(p, proxy_port=45678), seatbelt.build_seatbelt_profile(p)):
+        assert '(allow network-bind (local ip "localhost:*"))' in prof
+        assert '(allow network-inbound (local ip "localhost:*"))' in prof
+
+
 def test_proxy_mode_without_port_fails_closed(tmp_path):
-    p = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), profiles=["proxy"]))
+    p = _macos_policy(tmp_path, profiles=["proxy"])
     assert "network-outbound" not in seatbelt.build_seatbelt_profile(p)  # no port -> no egress rule
 
 
@@ -94,9 +122,16 @@ def test_canonicalize_resolves_symlinks(tmp_path):
 
 
 def test_describe_renders_the_profile(tmp_path):
-    p = resolve_policy(SandboxRequest(command=["echo", "hi"], project=str(tmp_path)))
+    p = _macos_policy(tmp_path, command=["echo", "hi"])
     text = seatbelt.SeatbeltBackend().describe(p)
     assert text.startswith("seatbelt profile:") and "(deny default)" in text
+
+
+def test_describe_reports_the_per_run_scratch(tmp_path):
+    # run() grants this, so explain must not under-report it.
+    text = seatbelt.SeatbeltBackend().describe(_macos_policy(tmp_path))
+    rw_block = text.split("(allow file-read* file-write*", 1)[1]
+    assert seatbelt._EXPLAIN_SCRATCH in rw_block
 
 
 def test_check_available_returns_bool():
@@ -104,6 +139,6 @@ def test_check_available_returns_bool():
 
 
 def test_explain_with_seatbelt_renders_profile(tmp_path):
-    p = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
+    p = _macos_policy(tmp_path)
     text = hozo.explain_policy(p, backend=seatbelt.SeatbeltBackend(), environ={})
     assert "seatbelt profile:" in text and "(deny default)" in text

@@ -15,6 +15,7 @@ binds:
   - { source: /usr, mode: ro }
   - { source: /etc, mode: ro, optional: true }
   - { source: /home, mode: ro, optional: true }
+  - { source: /Users, mode: ro, optional: true }
   - { source: /root, mode: ro, optional: true }
   - { source: /var, mode: ro, optional: true }
   - { source: /opt, mode: ro, optional: true }
