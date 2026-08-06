@@ -50,12 +50,20 @@ class Backend(ABC):
         """Execute the policy and return the result."""
 
     def _spawn(
-        self, argv: list[str], env: dict[str, str], policy: ResolvedPolicy, *, capture: bool, cwd: str | None = None
+        self,
+        argv: list[str],
+        env: dict[str, str],
+        policy: ResolvedPolicy,
+        *,
+        capture: bool,
+        cwd: str | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> SandboxResult:
         """Run the built invocation. ``env`` is the child's whole process environment (not
-        passed as runtime flags), so values stay out of the world-readable cmdline."""
+        passed as runtime flags), so values stay out of the world-readable cmdline.
+        ``pass_fds`` keeps those descriptors open at the same numbers in the child."""
         extra = {"capture_output": True, "text": True} if capture else {}
-        proc = subprocess.run(argv, env=env, cwd=cwd, **extra)
+        proc = subprocess.run(argv, env=env, cwd=cwd, pass_fds=pass_fds, **extra)
         return SandboxResult(proc.returncode, proc.stdout, proc.stderr, policy, argv, self.name)
 
 

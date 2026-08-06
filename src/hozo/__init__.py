@@ -15,6 +15,7 @@ from .explain import explain_policy
 from .policy import ResolvedPolicy, SandboxRequest, resolve_policy
 from .profiles import Bind
 from .seatbelt import SeatbeltBackend, build_seatbelt_profile
+from .seccomp import build_seccomp_filter
 
 
 def run(request, **kwargs) -> SandboxResult:
@@ -44,6 +45,7 @@ __all__ = [
     "get_backend",
     "resolve_policy",
     "build_bwrap_argv",
+    "build_seccomp_filter",
     "build_seatbelt_profile",
     "explain_policy",
     "check_available",

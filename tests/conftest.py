@@ -1,6 +1,24 @@
+import platform
+
 import pytest
 
+from hozo.paths import profiles_dir
 from hozo.policy import SandboxRequest, resolve_policy
+
+linux_only = pytest.mark.skipif(platform.system() != "Linux", reason="bwrap and syscall filtering are Linux-only")
+
+
+@pytest.fixture
+def make_profile():
+    """Write a profile into the (temp-isolated) user profiles dir, so merge tests resolve
+    through the real loader rather than a patched one."""
+    pdir = profiles_dir()
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    def _make(name, body=""):
+        (pdir / f"{name}.yaml").write_text(f"name: {name}\n{body}")
+
+    return _make
 
 
 @pytest.fixture(autouse=True)

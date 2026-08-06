@@ -17,6 +17,8 @@ import yaml
 from .errors import ProfileError
 from .paths import profiles_dir
 from .proxy import valid_port_spec
+from .seccomp import ACTIONS as SYSCALL_ACTIONS
+from .seccomp import known_syscalls
 
 NETWORK_MODES = ("none", "proxy", "host")
 _BIND_MODES = ("ro", "rw")
@@ -46,6 +48,8 @@ class Profile:
     proc: bool = False
     dev: bool = False
     proxy_allow_hosts: list[str] = field(default_factory=list)
+    syscall_deny: list[str] = field(default_factory=list)
+    syscall_action: str | None = None  # None == unset; resolver defaults to 'errno'
 
 
 def _abs_or_placeholder(value: str) -> bool:
@@ -130,6 +134,21 @@ def parse_profile(data, source: str) -> Profile:
     if isinstance(special, dict):
         profile.proc = bool(special.get("proc", False))
         profile.dev = bool(special.get("dev", False))
+
+    syscalls = data.get("syscalls")
+    if isinstance(syscalls, dict):
+        profile.syscall_deny = _str_list(syscalls.get("deny"), f"{source}: syscalls.deny")
+        # Every arch, so a typo fails on macOS too. The host arch is rechecked at compile.
+        unknown = sorted(set(profile.syscall_deny) - known_syscalls())
+        if unknown:
+            raise ProfileError(f"{source}: unknown syscall in syscalls.deny: {', '.join(unknown)}")
+        action = syscalls.get("action")
+        if action is not None:
+            if action not in SYSCALL_ACTIONS:
+                raise ProfileError(f"{source}: syscalls.action must be one of {tuple(SYSCALL_ACTIONS)}, got {action!r}")
+            profile.syscall_action = action
+    elif syscalls is not None:
+        raise ProfileError(f"{source}: syscalls must be a mapping")
 
     proxy = data.get("proxy")
     if isinstance(proxy, dict):

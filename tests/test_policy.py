@@ -5,19 +5,8 @@ from conftest import policy_with_base
 
 from hozo import policy
 from hozo.errors import MergeConflictError
-from hozo.paths import SCRATCH_PLACEHOLDER, profiles_dir
+from hozo.paths import SCRATCH_PLACEHOLDER
 from hozo.policy import SandboxRequest
-
-
-@pytest.fixture
-def make_profile():
-    pdir = profiles_dir()
-    pdir.mkdir(parents=True, exist_ok=True)
-
-    def _make(name, body=""):
-        (pdir / f"{name}.yaml").write_text(f"name: {name}\n{body}")
-
-    return _make
 
 
 def test_base_only(tmp_path):

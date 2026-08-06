@@ -38,7 +38,9 @@ def test_get_unknown_backend_errors():
 
 def test_bwrap_backend_describe(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path)))
-    assert BubblewrapBackend().describe(policy).startswith("bwrap argv:")
+    # 'in', not 'startswith': describe may prefix backend-specific notes (e.g. the seccomp
+    # denylist) above the argv.
+    assert "bwrap argv:" in BubblewrapBackend().describe(policy)
 
 
 def test_runner_delegates_to_injected_backend(tmp_path):
