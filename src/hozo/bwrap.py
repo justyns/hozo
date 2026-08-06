@@ -32,12 +32,15 @@ from .proxy import (
     ProxyMount,
     bridge_script_path,
 )
+from .seccomp import build_seccomp_filter, host_arch
 
 # Top-level dirs that are symlinks into /usr on merged-/usr distros (Arch/EndeavourOS).
 _MERGED_USR_LINKS = ("/bin", "/sbin", "/lib", "/lib64")
 
 # Stand-in paths for `explain`: the real socket and script are per-run temporaries.
 _EXPLAIN_MOUNT = ProxyMount("<host-proxy.sock>", "<bridge.py>")
+# Likewise the seccomp fd, which only exists for the duration of a run.
+_EXPLAIN_SECCOMP_FD = "<seccomp-fd>"
 
 # The in-sandbox per-run temp dir behind the {scratch} placeholder.
 SCRATCH_DIR = "/tmp/hozo-scratch"
@@ -48,7 +51,9 @@ def check_available() -> bool:
     return shutil.which("bwrap") is not None
 
 
-def build_bwrap_argv(policy: ResolvedPolicy, *, proxy: ProxyMount | None = None) -> list[str]:
+def build_bwrap_argv(
+    policy: ResolvedPolicy, *, proxy: ProxyMount | None = None, seccomp_fd: str | None = None
+) -> list[str]:
     use_proxy = proxy is not None and policy.network_mode == "proxy"
 
     argv = [
@@ -59,6 +64,8 @@ def build_bwrap_argv(policy: ResolvedPolicy, *, proxy: ProxyMount | None = None)
         "--unshare-uts",
         "--unshare-cgroup-try",
     ]
+    if seccomp_fd is not None:
+        argv += ["--seccomp", seccomp_fd]
     if policy.network_mode in ("none", "proxy"):
         argv += ["--unshare-net"]
 
@@ -110,6 +117,17 @@ def _merged_usr_links() -> tuple[str, ...]:
     return tuple(args)
 
 
+def _describe_syscalls(policy: ResolvedPolicy, *, filtered: bool) -> list[str]:
+    """Reported here, not in ``explain``'s backend-neutral header: Seatbelt cannot filter
+    syscalls, and neither can an arch with no table."""
+    if not policy.syscall_deny:
+        return []
+    denied = ", ".join(sorted(policy.syscall_deny))
+    if filtered:
+        return [f"Syscalls: deny -> {policy.syscall_action} ({denied})"]
+    return [f"Syscalls: NOT FILTERED, no syscall table for {host_arch()}; requested: {denied}"]
+
+
 def _bind_flag(bind: Bind) -> str:
     if bind.mode == "rw":
         return "--bind-try" if bind.optional else "--bind"
@@ -126,7 +144,12 @@ class BubblewrapBackend(Backend):
 
     def describe(self, policy: ResolvedPolicy) -> str:
         mount = _EXPLAIN_MOUNT if policy.network_mode == "proxy" else None
-        return f"{self.name} argv:\n  " + shlex.join(build_bwrap_argv(policy, proxy=mount))
+        # Compile what run() would, so explain cannot claim a filter that will not load.
+        program = build_seccomp_filter(policy)
+        argv = build_bwrap_argv(policy, proxy=mount, seccomp_fd=_EXPLAIN_SECCOMP_FD if program else None)
+        lines = _describe_syscalls(policy, filtered=program is not None)
+        lines.append(f"{self.name} argv:\n  " + shlex.join(argv))
+        return "\n".join(lines)
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
         with ExitStack() as stack:
@@ -135,9 +158,25 @@ class BubblewrapBackend(Backend):
                 socket_path = stack.enter_context(_proxy_workspace())
                 stack.enter_context(BackgroundProxy(socket_path, policy.proxy_allow_hosts))
                 mount = ProxyMount(str(socket_path), bridge_script_path())
-            argv = build_bwrap_argv(policy, proxy=mount)
+
+            program = build_seccomp_filter(policy)
+            seccomp_fd = stack.enter_context(_seccomp_fd(program)) if program else None
+            pass_fds = () if seccomp_fd is None else (seccomp_fd,)
+
+            argv = build_bwrap_argv(policy, proxy=mount, seccomp_fd=None if seccomp_fd is None else str(seccomp_fd))
             env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None, scratch=SCRATCH_DIR)
-            return self._spawn(argv, env, policy, capture=capture)
+            return self._spawn(argv, env, policy, capture=capture, pass_fds=pass_fds)
+
+
+@contextmanager
+def _seccomp_fd(program: bytes):
+    """The compiled cBPF on an inherited fd. A temp file rather than a pipe, since a filter
+    larger than the pipe buffer would deadlock. bwrap reads from the current offset."""
+    with tempfile.TemporaryFile() as handle:
+        handle.write(program)
+        handle.flush()
+        handle.seek(0)
+        yield handle.fileno()
 
 
 @contextmanager

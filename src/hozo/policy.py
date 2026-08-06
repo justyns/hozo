@@ -55,6 +55,8 @@ class ResolvedPolicy:
     proc: bool = False
     dev: bool = False
     proxy_allow_hosts: list[str] = field(default_factory=list)
+    syscall_deny: list[str] = field(default_factory=list)
+    syscall_action: str = "errno"
 
 
 def _union(into: list[str], more: list[str]) -> None:
@@ -106,6 +108,10 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
         for bind in layer.binds:
             _add_bind(policy.binds, _expand_bind(bind, project), override=override)
         _union(policy.proxy_allow_hosts, layer.proxy_allow_hosts)
+        # Denies union so composing only tightens; the action is a scalar like home/cwd.
+        _union(policy.syscall_deny, layer.syscall_deny)
+        if layer.syscall_action:
+            policy.syscall_action = layer.syscall_action
         policy.proc = policy.proc or layer.proc
         policy.dev = policy.dev or layer.dev
         if layer.clear_env is not None:

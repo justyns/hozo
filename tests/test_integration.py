@@ -13,6 +13,7 @@ import socket
 import threading
 
 import pytest
+from conftest import linux_only
 
 import hozo
 
@@ -167,3 +168,53 @@ def test_host_network_reaches_upstream(tmp_path, upstream):
     res = _bash(_DIRECT, f"127.0.0.1:{upstream}", tmp_path, network="host")
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip() == "REACHED"
+
+
+# The bash probes above can't reach a raw syscall, so these go through python3's ctypes.
+# `hozo audit` already depends on an in-sandbox interpreter, so this adds no new
+# assumption about the /usr bind.
+_SYSCALL = r"""
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+ctypes.set_errno(0)
+rc = libc.syscall(int(sys.argv[1]), 0, 0, 0)
+print("ENOSYS" if rc == -1 and ctypes.get_errno() == 38 else f"CALLED:{rc}")
+"""
+
+
+def _syscall(number, project, **kw):
+    return _run(["python3", "-c", _SYSCALL, str(number)], project, **kw)
+
+
+@linux_only
+def test_seccomp_filter_is_actually_loaded(tmp_path):
+    """The finding this closes was `Seccomp: 0` in /proc/self/status — assert the kernel
+    took the filter, not merely that hozo passed the flag."""
+    res = _run(["/bin/sh", "-c", "grep ^Seccomp /proc/self/status"], tmp_path)
+    assert "Seccomp:\t2" in res.stdout, res.stdout
+    assert "Seccomp_filters:\t1" in res.stdout, res.stdout
+
+
+@linux_only
+def test_denied_syscall_returns_enosys(tmp_path):
+    """io_uring_setup(425) is the headline entry in base's denylist."""
+    res = _syscall(425, tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "ENOSYS", res.stdout
+
+
+@linux_only
+def test_undenied_syscall_still_works(tmp_path):
+    """Control for the test above: getpid(39) proves the ENOSYS came from the denylist and
+    not from a filter that rejects everything."""
+    res = _syscall(39, tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.startswith("CALLED:"), res.stdout
+
+
+@linux_only
+def test_nested_sandboxing_is_not_broken_by_the_filter(tmp_path):
+    """unshare/clone are deliberately absent from the denylist because Claude Code runs its
+    own bwrap inside hozo's. Assert that stays true."""
+    res = _run(["/bin/sh", "-c", "unshare --user --map-root-user true && echo NESTED_OK"], tmp_path)
+    assert res.stdout.strip() == "NESTED_OK", f"{res.stdout} {res.stderr}"

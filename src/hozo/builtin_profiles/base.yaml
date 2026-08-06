@@ -44,3 +44,27 @@ special:
 
 tmpfs:
   - /tmp
+
+# Syscalls with a history of kernel privilege-escalation bugs. Linux only; ignored under
+# Seatbelt.
+#
+# Left out on purpose: unshare and clone, which nested sandboxing needs, and ptrace and
+# process_vm_readv, which `hozo audit` needs to run strace.
+syscalls:
+  action: errno
+  deny:
+    - io_uring_setup
+    - io_uring_enter
+    - io_uring_register
+    - bpf
+    - userfaultfd
+    - perf_event_open
+    - keyctl
+    - add_key
+    - request_key
+    - open_by_handle_at
+    - kexec_load
+    - kexec_file_load
+    - init_module
+    - finit_module
+    - delete_module

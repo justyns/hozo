@@ -1,7 +1,6 @@
 import os
-import platform
 
-import pytest
+from conftest import linux_only
 
 from hozo import bwrap
 from hozo.env import build_env
@@ -10,7 +9,7 @@ from hozo.proxy import BRIDGE_PORT, ProxyMount
 
 # The renderer is Linux-only, and these assertions expect the Linux `base` profile
 # (macOS resolves `base-macos`, which binds no system paths of its own).
-pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="bwrap renderer is Linux-only")
+pytestmark = linux_only
 
 
 def _has_seq(argv, seq):

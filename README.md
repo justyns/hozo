@@ -55,6 +55,26 @@ Ad-hoc allows can be granted on the cli:
 - `--allow-net` with no value opens full host networking, no proxy required
 - `--allow-read=PATH,PATH` / `--allow-write=PATH,PATH` allows reading/writing to specific paths.
 
+### Syscall filtering (Linux)
+
+`base` loads a seccomp filter denying `io_uring_*`, `bpf`, `userfaultfd`,
+`perf_event_open`, the kernel keyring, and module/kexec loading: syscalls with a history of
+kernel privilege-escalation bugs. Denied calls return `ENOSYS`, which callers that probe for
+a feature handle as "unsupported". `unshare` and `ptrace` stay allowed, so nested sandboxes
+and `hozo audit` keep working.
+
+A tool that needs one of these has to override `base`, since denies only accumulate across
+profiles.
+
+```yaml
+syscalls:
+  action: errno   # errno | kill | log ('log' permits and records)
+  deny:
+    - perf_event_open
+```
+
+Denies from every applied profile are unioned. Ignored under macOS Seatbelt.
+
 ## Finding out what a tool needs
 
 If you want to build a new profile for a tool or command, the easiest way to start
