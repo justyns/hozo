@@ -11,6 +11,16 @@ def test_bare_prints_usage(capsys):
     assert "hozo" in capsys.readouterr().out
 
 
+def test_version_flag(capsys):
+    assert cli.main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == hozo.__version__
+
+
+def test_version_after_the_separator_belongs_to_the_command(capsys):
+    assert cli.main(["+untrusted", "--", "echo", "--version"]) == 0
+    assert capsys.readouterr().out.strip() != hozo.__version__
+
+
 def test_profile_list(capsys):
     assert cli.main(["profile", "list"]) == 0
     out = capsys.readouterr().out

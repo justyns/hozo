@@ -20,7 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import audit
+from . import __version__, audit
 from .errors import HozoError
 from .executor import SandboxRunner
 from .explain import explain_policy
@@ -41,7 +41,7 @@ hozo — run tools in composable sandboxes
   hozo profile list
 
 Grants (deny-by-default): --allow-net[=HOST,...]  --allow-read=PATH,...  --allow-write=PATH,...
-Flags: --project PATH  --network none|proxy|host  --no-base  --override
+Flags: --project PATH  --network none|proxy|host  --no-base  --override  --version
 Audit: --network-only  --show-granted  --audit-out=PATH
 """
 
@@ -82,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
     if "--" in argv:
         idx = argv.index("--")
         argv, command = argv[:idx], argv[idx + 1 :]
+    # After the split, so `-- cmd --version` stays part of the command.
+    if "--version" in argv:
+        print(__version__)
+        return 0
     profiles = [tok[1:] for tok in argv if _is_profile(tok)]
     # Pulled out like '+profile' tokens are, so they never become SandboxRequest fields.
     audit_opts = {tok[2:].replace("-", "_"): True for tok in argv if tok in _AUDIT_BOOL_OPTS}
