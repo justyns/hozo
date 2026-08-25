@@ -123,6 +123,17 @@ def test_unknown_keys_beside_env_are_rejected():
         _parse({"TOK": {"env": "HOZO_TEST_CMD", "defualt": ["x"]}})
 
 
+def test_the_claude_profile_reads_one_stored_token_on_this_platform(monkeypatch):
+    """The delenv matters: the profile tells users to export this, so without it the suite
+    fails for anyone who followed the setup."""
+    monkeypatch.delenv("HOZO_CMD_CLAUDE_TOKEN", raising=False)
+    p = profiles.load_profile("claude")
+    argv = p.env_set_from_command["CLAUDE_CODE_OAUTH_TOKEN"]
+    assert argv[0] == ("security" if platform.system() == "Darwin" else "secret-tool")
+    # By service alone: both stores match a subset, so no account value to agree on.
+    assert "hozo-claude" in argv
+
+
 # --- merge / resolve -----------------------------------------------------------------
 
 

@@ -1,9 +1,22 @@
 name: claude
-description: >-
-  Run your host-installed Claude Code inside the sandbox with its login, sessions, and
-  memory intact. Uses your real home path and mounts the project in place, so paths match
-  the host. Binds ~/.claude + ~/.claude.json.
-  Egress is limited to Anthropic.
+description: |
+  Run your host-installed Claude Code inside the sandbox with its sessions and memory
+  intact. Uses your real home path and mounts the project in place, so paths match the
+  host. Binds ~/.claude + ~/.claude.json. Egress is limited to Anthropic.
+
+  Requires one-time setup to generate and store a claude token:
+
+    claude setup-token
+
+    # Linux
+    secret-tool store --label='hozo claude token' service hozo-claude
+
+    # macOS (untested, no Mac here; from `man security`)
+    security add-generic-password -U -s hozo-claude -T /usr/bin/security -w
+    security set-generic-password-partition-list -S apple-tool: -s hozo-claude
+
+  For another password manager, point $HOZO_CMD_CLAUDE_TOKEN at any command that prints the
+  token on stdout, such as 'pass show hozo/claude'.
 
 process:
   cwd: "{project}"
@@ -17,6 +30,12 @@ env:
   set:
     # Defaults to /tmp/claude-$UID, which Seatbelt denies.
     CLAUDE_CODE_TMPDIR: "{scratch}"
+  set_from_command:
+    CLAUDE_CODE_OAUTH_TOKEN:
+      env: HOZO_CMD_CLAUDE_TOKEN
+      default:
+        macos: [security, find-generic-password, -s, hozo-claude, -w]
+        linux: [secret-tool, lookup, service, hozo-claude]
   prepend_path:
     - "{home}/.local/bin"
 
