@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,6 +52,7 @@ class ResolvedPolicy:
     tmpfs: list[str] = field(default_factory=list)
     env_allow: list[str] = field(default_factory=list)
     env_set: dict[str, str] = field(default_factory=dict)
+    env_set_from_command: dict[str, list[str]] = field(default_factory=dict)
     prepend_path: list[str] = field(default_factory=list)
     proc: bool = False
     dev: bool = False
@@ -103,6 +105,13 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
             if key in policy.env_set and policy.env_set[key] != value and not override:
                 raise MergeConflictError(f"env {key!r} set to conflicting values: {policy.env_set[key]!r} vs {value!r}")
             policy.env_set[key] = value
+        for key, argv in layer.env_set_from_command.items():
+            if key in policy.env_set_from_command and policy.env_set_from_command[key] != argv and not override:
+                raise MergeConflictError(
+                    f"env {key!r} set from conflicting commands: "
+                    f"{shlex.join(policy.env_set_from_command[key])} vs {shlex.join(argv)}"
+                )
+            policy.env_set_from_command[key] = argv
         policy.prepend_path += layer.prepend_path
         _union(policy.tmpfs, layer.tmpfs)
         for bind in layer.binds:
@@ -122,6 +131,10 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
             policy.home = layer.home
         if layer.network_mode:
             explicit_modes.append(layer.network_mode)
+
+    clash = sorted(set(policy.env_set) & set(policy.env_set_from_command))
+    if clash and not override:
+        raise MergeConflictError(f"env set by both env.set and env.set_from_command: {', '.join(clash)}")
 
     if explicit_modes:
         policy.network_mode = min(explicit_modes, key=_NETWORK_RANK.__getitem__)
@@ -166,8 +179,17 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
     if request.bind_project:
         _add_bind(policy.binds, Bind(source=project, mode="rw"), override=True)
 
-    # Inline request fields win unconditionally over profiles.
+    # Inline request fields win over profiles, including over a host command.
     policy.env_set.update(request.env)
+    for key in request.env:
+        policy.env_set_from_command.pop(key, None)
+
+    # No defer=: {scratch} is sandbox-internal, so a host command naming it raises.
+    # Command output is never expanded.
+    policy.env_set_from_command = {
+        key: [expand_path(a, project=proj) if "{" in a else a for a in argv]
+        for key, argv in policy.env_set_from_command.items()
+    }
 
     # Braced values only, so a value that merely starts with '~' stays literal.
     policy.env_set = {

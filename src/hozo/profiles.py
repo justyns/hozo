@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import functools
 import importlib.resources as resources
+import os
 import platform
+import shlex
 from dataclasses import dataclass, field
 
 import yaml
@@ -19,6 +21,8 @@ from .paths import profiles_dir
 from .proxy import valid_port_spec
 from .seccomp import ACTIONS as SYSCALL_ACTIONS
 from .seccomp import known_syscalls
+
+_PLATFORMS = ("macos", "linux")
 
 NETWORK_MODES = ("none", "proxy", "host")
 _BIND_MODES = ("ro", "rw")
@@ -42,6 +46,7 @@ class Profile:
     home: str | None = None  # absolute path for $HOME — a fresh empty dir each run
     env_allow: list[str] = field(default_factory=list)
     env_set: dict[str, str] = field(default_factory=dict)
+    env_set_from_command: dict[str, list[str]] = field(default_factory=dict)
     prepend_path: list[str] = field(default_factory=list)
     binds: list[Bind] = field(default_factory=list)
     tmpfs: list[str] = field(default_factory=list)
@@ -71,6 +76,72 @@ def _str_map(value, where: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ProfileError(f"{where} must be a mapping")
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _argv_map(value, where: str) -> dict[str, list[str]]:
+    """Parse ``env.set_from_command``, resolving each value for this host."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ProfileError(f"{where} must be a mapping")
+    here = "macos" if platform.system() == "Darwin" else "linux"
+    result: dict[str, list[str]] = {}
+    for key, spec in value.items():
+        argv = _resolve_argv(spec, f"{where}: {key}", here)
+        if argv is not None:
+            result[str(key)] = argv
+    return result
+
+
+def _resolve_argv(spec, where: str, here: str) -> list[str] | None:
+    """One ``set_from_command`` value: an argv list, a ``{macos:, linux:}`` map (a platform
+    not named returns None), or ``{env: VAR, default: ...}`` where ``$VAR`` supplies the
+    command line as a string."""
+    if isinstance(spec, dict) and "env" in spec:
+        unknown = sorted(set(spec) - {"env", "default"})
+        if unknown:
+            raise ProfileError(f"{where}: unknown key(s) {', '.join(unknown)}; expected 'env' and 'default'")
+        name = spec["env"]
+        if not isinstance(name, str) or not name:
+            raise ProfileError(f"{where}: env must be an environment variable name")
+        override = os.environ.get(name, "").strip()
+        if override:
+            return _split_command(override, f"{where}: ${name}")
+        if "default" not in spec:
+            raise ProfileError(f"{where}: no default, so ${name} must be set")
+        return _resolve_argv(spec["default"], where, here)
+
+    if isinstance(spec, dict):
+        unknown = sorted(set(spec) - set(_PLATFORMS))
+        if unknown:
+            raise ProfileError(f"{where}: unknown platform(s) {', '.join(unknown)}; use {_PLATFORMS}")
+        # Every platform, so a macOS typo fails on Linux too, where CI runs.
+        for plat, branch in spec.items():
+            _argv(branch, f"{where}: {plat}")
+        return _argv(spec[here], f"{where}: {here}") if here in spec else None
+
+    return _argv(spec, where)
+
+
+def _argv(spec, where: str) -> list[str]:
+    if not isinstance(spec, list) or not spec or not all(isinstance(a, str) for a in spec):
+        raise ProfileError(f"{where} must be a non-empty list of strings: an argv, never a shell string")
+    return list(spec)
+
+
+def _split_command(value: str, where: str) -> list[str]:
+    try:
+        argv = shlex.split(value)
+    except ValueError as exc:
+        raise ProfileError(f"{where}: cannot parse {value!r}: {exc}") from exc
+    if not argv:
+        raise ProfileError(f"{where} is empty")
+    if any("$" in a or "`" in a for a in argv):
+        raise ProfileError(
+            f"{where}: {value!r} contains a shell substitution, which hozo does not expand. "
+            "Use the {user}, {home} or {project} placeholders instead."
+        )
+    return argv
 
 
 def _parse_bind(raw, source: str) -> Bind:
@@ -118,6 +189,7 @@ def parse_profile(data, source: str) -> Profile:
     if isinstance(env, dict):
         profile.env_allow = _str_list(env.get("allow"), f"{source}: env.allow")
         profile.env_set = _str_map(env.get("set"), f"{source}: env.set")
+        profile.env_set_from_command = _argv_map(env.get("set_from_command"), f"{source}: env.set_from_command")
         profile.prepend_path = _str_list(env.get("prepend_path"), f"{source}: env.prepend_path")
     elif env is not None:
         raise ProfileError(f"{source}: env must be a mapping")

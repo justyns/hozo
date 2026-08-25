@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 from .backend import Backend, SandboxResult
-from .env import build_env
+from .env import build_env, resolve_env_commands
 from .paths import state_dir
 from .policy import ResolvedPolicy
 from .profiles import Bind
@@ -152,6 +152,8 @@ class BubblewrapBackend(Backend):
         return "\n".join(lines)
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
+        # Before the ExitStack: fail closed before a proxy socket or temp dir exists.
+        from_command = resolve_env_commands(policy)
         with ExitStack() as stack:
             mount = None
             if policy.network_mode == "proxy":
@@ -164,7 +166,13 @@ class BubblewrapBackend(Backend):
             pass_fds = () if seccomp_fd is None else (seccomp_fd,)
 
             argv = build_bwrap_argv(policy, proxy=mount, seccomp_fd=None if seccomp_fd is None else str(seccomp_fd))
-            env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None, scratch=SCRATCH_DIR)
+            env = build_env(
+                policy,
+                environ=environ,
+                proxy_port=BRIDGE_PORT if mount else None,
+                scratch=SCRATCH_DIR,
+                from_command=from_command,
+            )
             return self._spawn(argv, env, policy, capture=capture, pass_fds=pass_fds)
 
 

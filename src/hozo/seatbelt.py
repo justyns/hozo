@@ -29,7 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .backend import Backend, SandboxResult
-from .env import build_env
+from .env import build_env, resolve_env_commands
 from .errors import ProfileError
 from .policy import ResolvedPolicy
 from .profiles import Bind
@@ -172,13 +172,14 @@ class SeatbeltBackend(Backend):
         return f"{self.name} profile:\n" + textwrap.indent(profile, "  ")
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
+        from_command = resolve_env_commands(policy)
         with ExitStack() as stack:
             scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="hozo-", ignore_cleanup_errors=True))
             port = None
             if policy.network_mode == "proxy":
                 port = stack.enter_context(BackgroundProxy(0, policy.proxy_allow_hosts)).port
 
-            env = build_env(policy, environ=environ, proxy_port=port, scratch=scratch)
+            env = build_env(policy, environ=environ, proxy_port=port, scratch=scratch, from_command=from_command)
             env["TMPDIR"] = scratch  # isolated per-run temp; the real /var/folders TMPDIR is scrubbed
             profile = build_seatbelt_profile(_canonicalize(_with_scratch(policy, scratch)), proxy_port=port)
 

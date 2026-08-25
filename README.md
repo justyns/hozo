@@ -75,6 +75,23 @@ syscalls:
 
 Denies from every applied profile are unioned. Ignored under macOS Seatbelt.
 
+### Credentials from the host
+
+`env.set_from_command` can be used to set environment variables inside the sandbox by running a command on the host before starting the sandbox.
+
+```yaml
+env:
+  set_from_command:
+    GH_TOKEN: [gh, auth, token]
+    CLAUDE_CODE_OAUTH_TOKEN:
+      env: HOZO_CMD_CLAUDE_TOKEN
+      default:
+        macos: [security, find-generic-password, -s, hozo-claude, -w]
+        linux: [secret-tool, lookup, service, hozo-claude]
+```
+
+If you set `env:` like `HOZO_CMD_CLAUDE_TOKEN` in the above example, you can then set the environment variable in your shell (outside of the sandbox) to override the command used to set the env variable.  E.g. this can be used to use something like `pass` or 1password cli to retrieve passwords.
+
 ## Finding out what a tool needs
 
 If you want to build a new profile for a tool or command, the easiest way to start

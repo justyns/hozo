@@ -49,8 +49,15 @@ def explain_policy(
 
     # Names only, so the placeholder port stands in for the per-run one.
     proxy_port = 0 if policy.network_mode == "proxy" else None
-    env_names = sorted(build_env(policy, environ=environ, proxy_port=proxy_port))
+    env_names = sorted(
+        set(build_env(policy, environ=environ, proxy_port=proxy_port)) | set(policy.env_set_from_command)
+    )
     lines.append("Env:      " + (", ".join(env_names) or "(none)"))
+
+    if policy.env_set_from_command:
+        lines.append("Runs on HOST before the sandbox (output becomes the value, never shown):")
+        for name, argv in sorted(policy.env_set_from_command.items()):
+            lines.append(f"  {name} = {shlex.join(argv)}")
 
     lines.append("Command:  " + (shlex.join(policy.command) if policy.command else "(none)"))
 
