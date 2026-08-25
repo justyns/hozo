@@ -54,8 +54,12 @@ Public API lives in `hozo/__init__.py`.
 
 - **No upward deps.** Hozo is a leaf library — it never imports the tools that consume it.
 - **Never execute shell strings.** Build the runtime invocation as an argv list; SBPL egress
-  filtering can't match hostnames, so host allowlisting stays in the proxy.
+  filtering can't match hostnames, so host allowlisting stays in the proxy. One exception:
+  a `set_from_command` `env:` override is `shlex.split` and exec'd with `shell=False`.
 - **Never print secret values** (`explain` shows env var *names* only).
+- **Profile files are trusted host code.** `env.set_from_command` runs a host binary, so
+  don't add project-local profile discovery. Resolution happens in `Backend.run` alone;
+  `ResolvedPolicy` carries the argv, never the value.
 - **Fail closed:** a missing backend binary is an error, never a silent unsandboxed run.
 - **Two in-code backends.** `Backend` ABC in `backend.py`; `BubblewrapBackend` (`bwrap.py`,
   Linux) and `SeatbeltBackend` (`seatbelt.py`, macOS), chosen by a plain platform-aware

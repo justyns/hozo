@@ -8,6 +8,7 @@ kept verbatim and never shell-parsed):
     hozo explain +p ... -- CMD ...
     hozo audit   +p ... -- CMD ...
     hozo profile list
+    hozo profile show NAME
 
 Grants are deny-by-default — nothing is allowed unless a profile or an --allow-* flag
 grants it: --allow-net[=HOST,...], --allow-read=PATH,..., --allow-write=PATH,....
@@ -25,7 +26,7 @@ from .errors import HozoError
 from .executor import SandboxRunner
 from .explain import explain_policy
 from .policy import SandboxRequest, resolve_policy
-from .profiles import Bind, available_profiles
+from .profiles import Bind, available_profiles, load_profile
 
 _VERBS = ("run", "explain", "profile", "audit")
 # Flags that map straight onto a SandboxRequest field.
@@ -39,6 +40,7 @@ hozo — run tools in composable sandboxes
   hozo explain +profile ... -- COMMAND
   hozo audit   +profile ... -- COMMAND
   hozo profile list
+  hozo profile show NAME
 
 Grants (deny-by-default): --allow-net[=HOST,...]  --allow-read=PATH,...  --allow-write=PATH,...
 Flags: --project PATH  --network none|proxy|host  --no-base  --override  --version
@@ -194,7 +196,13 @@ def _cmd_profile(args: list[str]) -> int:
         for name, origin in sorted(available_profiles().items()):
             print(f"{name:20} {origin}")
         return 0
-    raise _UsageError(2, "usage: hozo profile list")
+    if len(args) == 2 and args[0] == "show":
+        profile = load_profile(args[1])
+        print(f"{profile.name}  ({profile.source})")
+        if profile.description:
+            print("\n" + profile.description.rstrip())
+        return 0
+    raise _UsageError(2, "usage: hozo profile [show] [list|NAME]")
 
 
 if __name__ == "__main__":

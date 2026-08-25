@@ -29,6 +29,7 @@ hozo --allow-net=pypi.org -- pip install requests   # grant just this host
 hozo --allow-read=/etc/hosts +untrusted -- cat /etc/hosts
 hozo audit -- ./some-tool             # what would this need? (see below)
 hozo profile list                     # built-in + your profiles
+hozo profile show claude              # what a profile does, and any setup it needs
 ```
 
 By default, the current directory is mounted read-write at the same path inside the sandbox.  So if you're in `/home/user/myproject`, then `/home/user/myproject` is mounted read-write inside the sandbox.  Other adjacent directories like `/home/user/myotherproject` are _NOT_ visible.
@@ -41,7 +42,7 @@ Profiles are composable YAML files that define what is allowed inside the sandbo
 
 Several built-in profiles are provided with Hozo, but you can create your own custom profiles by putting them in `~/.config/hozo/profiles/<name>.yaml`.  Built-in profiles can also be overridden by a user profile of the same name.
 
-`hozo profile list` shows what's available.  `hozo explain +a +b -- cmd` shows the merged result.
+`hozo profile list` shows what's available and `hozo profile show NAME` describes it.  `hozo explain +a +b -- cmd` shows the merged result.
 
 ## Policies
 
@@ -74,6 +75,23 @@ syscalls:
 ```
 
 Denies from every applied profile are unioned. Ignored under macOS Seatbelt.
+
+### Credentials from the host
+
+`env.set_from_command` can be used to set environment variables inside the sandbox by running a command on the host before starting the sandbox.
+
+```yaml
+env:
+  set_from_command:
+    GH_TOKEN: [gh, auth, token]
+    CLAUDE_CODE_OAUTH_TOKEN:
+      env: HOZO_CMD_CLAUDE_TOKEN
+      default:
+        macos: [security, find-generic-password, -s, hozo-claude, -w]
+        linux: [secret-tool, lookup, service, hozo-claude]
+```
+
+If you set `env:` like `HOZO_CMD_CLAUDE_TOKEN` in the above example, you can then set the environment variable in your shell (outside of the sandbox) to override the command used to set the env variable.  E.g. this can be used to use something like `pass` or 1password cli to retrieve passwords.
 
 ## Finding out what a tool needs
 

@@ -27,6 +27,17 @@ def test_profile_list(capsys):
     assert "base" in out and "untrusted" in out
 
 
+def test_profile_show_prints_the_description(capsys):
+    assert cli.main(["profile", "show", "claude"]) == 0
+    out = capsys.readouterr().out
+    assert "claude" in out
+    assert "setup" in out.lower()
+
+
+def test_profile_show_needs_a_name(capsys):
+    assert cli.main(["profile", "show"]) == 2
+
+
 def test_explain_verb(capsys):
     assert cli.main(["explain", "+untrusted", "--", "echo", "hi"]) == 0
     out = capsys.readouterr().out
