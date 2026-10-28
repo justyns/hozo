@@ -1,9 +1,13 @@
 import os
+import subprocess
 
 import pytest
+from conftest import HOZO_CLI
 
 import hozo
 from hozo import cli
+from hozo.env import build_env
+from hozo.policy import resolve_policy
 
 
 def test_bare_prints_usage(capsys):
@@ -16,9 +20,14 @@ def test_version_flag(capsys):
     assert capsys.readouterr().out.strip() == hozo.__version__
 
 
-def test_version_after_the_separator_belongs_to_the_command(capsys):
-    assert cli.main(["+untrusted", "--", "echo", "--version"]) == 0
-    assert capsys.readouterr().out.strip() != hozo.__version__
+def _run(args, **kw):
+    return subprocess.run([*HOZO_CLI, *args], capture_output=True, text=True, **kw)
+
+
+def test_version_after_the_separator_belongs_to_the_command():
+    res = _run(["+untrusted", "--", "echo", "--version"])
+    assert res.returncode == 0
+    assert res.stdout.strip() != hozo.__version__
 
 
 def test_profile_list(capsys):
@@ -45,16 +54,17 @@ needs_sandbox = pytest.mark.skipif(not hozo.check_available(), reason="no sandbo
 
 
 @needs_sandbox
-def test_run_success_returncode(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    expected = os.getcwd()  # project defaults to cwd; mounted in place
-    assert cli.main(["+untrusted", "--", "sh", "-c", f'test "$(pwd)" = {expected}']) == 0
+def test_run_success_returncode(tmp_path):
+    # project defaults to cwd; mounted in place
+    assert (
+        _run(["+untrusted", "--", "sh", "-c", f'test "$(pwd)" = {os.path.realpath(tmp_path)}'], cwd=tmp_path).returncode
+        == 0
+    )
 
 
 @needs_sandbox
-def test_run_failure_returncode(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert cli.main(["+untrusted", "--", "false"]) == 1
+def test_run_failure_returncode(tmp_path):
+    assert _run(["+untrusted", "--", "false"], cwd=tmp_path).returncode == 1
 
 
 def test_value_option_missing_value_errors():
@@ -71,3 +81,20 @@ def test_allow_flags_grant_net_and_paths(capsys):
 
 def test_allow_read_requires_paths():
     assert cli.main(["--allow-read", "--", "true"]) == 2
+
+
+def test_allow_env_passes_named_vars_through(capsys, monkeypatch):
+    monkeypatch.setenv("HOZO_TEST_GRANTED", "1")
+    monkeypatch.setenv("HOZO_TEST_OTHER", "1")
+    assert cli.main(["explain", "--allow-env=HOZO_TEST_GRANTED", "--", "true"]) == 0
+    env_line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Env:"))
+    assert "HOZO_TEST_GRANTED" in env_line and "HOZO_TEST_OTHER" not in env_line
+
+
+def test_allow_env_keeps_the_host_value_over_defaults(monkeypatch):
+    monkeypatch.setenv("PATH", "/opt/tool/bin:/usr/bin")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/host/cache")
+    request, _ = cli._parse_flags(["--allow-env=PATH,XDG_CACHE_HOME"])
+    env = build_env(resolve_policy(request))
+    assert env["PATH"] == "/opt/tool/bin:/usr/bin"
+    assert env["XDG_CACHE_HOME"] == "/host/cache"

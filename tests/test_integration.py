@@ -9,11 +9,18 @@ The probes are bash rather than python: `/dev/tcp` is a bash builtin, so they ne
 inside the sandbox beyond a shell that both platforms ship in /bin.
 """
 
+import os
+import shutil
+import signal
 import socket
+import subprocess
+import tempfile
 import threading
+import uuid
+from pathlib import Path
 
 import pytest
-from conftest import linux_only
+from conftest import HOZO_CLI, linux_only, macos_only, proxy_up, wait_until
 
 import hozo
 
@@ -168,6 +175,156 @@ def test_host_network_reaches_upstream(tmp_path, upstream):
     res = _bash(_DIRECT, f"127.0.0.1:{upstream}", tmp_path, network="host")
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip() == "REACHED"
+
+
+# --- lifetime ---
+
+
+def _cli(tmp_path, script):
+    proc = subprocess.Popen(
+        [*HOZO_CLI, "--allow-net=example.com", "--", "/bin/bash", "-c", script],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return proc, proc.stdout.readline().split()
+
+
+@pytest.mark.parametrize("sig", [signal.SIGKILL, signal.SIGTERM, signal.SIGINT])
+def test_killing_hozo_kills_the_sandboxed_command(tmp_path, sig):
+    token = f"hozo-lifetime-{uuid.uuid4().hex}"
+    hozo_proc, _ = _cli(tmp_path, f"echo ready; exec -a {token} sleep 300")
+
+    def sleepers():
+        # The sleep's argv[0] is the token; hozo's and bwrap's argv only contain it.
+        ps = subprocess.run(["ps", "ax", "-o", "command"], capture_output=True, text=True).stdout
+        return [line for line in ps.splitlines() if line.strip().startswith(token)]
+
+    assert wait_until(sleepers)
+    hozo_proc.send_signal(sig)
+    hozo_proc.wait()
+    assert wait_until(lambda: not sleepers()), sleepers()
+
+
+@macos_only
+def test_seatbelt_cli_execs_and_cleans_up_after_a_kill(tmp_path):
+    hozo_proc, (pid, scratch, proxy) = _cli(tmp_path, 'echo "$$ $TMPDIR $HTTP_PROXY"; exec sleep 300')
+    port = int(proxy.rsplit(":", 1)[1])
+    assert int(pid) == hozo_proc.pid
+    assert proxy_up(port) and os.path.isdir(scratch)
+
+    hozo_proc.kill()
+    hozo_proc.wait()
+    assert wait_until(lambda: not os.path.exists(scratch))
+    assert wait_until(lambda: not proxy_up(port))
+
+
+# --- ssh ---
+
+
+@pytest.fixture
+def sshd():
+    """Stand-in SSH server that sends a banner and records the client's first bytes."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    received = []
+
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            conn.sendall(b"SSH-2.0-hozo-stub\r\n")
+            received.append(conn.recv(256))
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    yield server.getsockname()[1], received
+    server.close()
+
+
+def _git_ssh(port, project, **kw):
+    return _run(["git", "ls-remote", f"ssh://git@127.0.0.1:{port}/org/repo"], project, profiles=["ssh"], **kw)
+
+
+def test_ssh_tunnels_through_the_proxy(tmp_path, sshd):
+    port, received = sshd
+    res = _git_ssh(port, tmp_path, network="proxy", allow_hosts=[f"127.0.0.1:{port}"])
+    assert received and received[0].startswith(b"SSH-2.0-"), res.stderr
+
+
+def test_ssh_to_an_unlisted_port_is_refused_by_the_proxy(tmp_path, sshd):
+    port, received = sshd
+    res = _git_ssh(port, tmp_path, network="proxy", allow_hosts=["127.0.0.1"])  # 80/443 only
+    assert res.returncode != 0
+    assert "403" in res.stderr
+    assert not received
+
+
+def test_ssh_profile_grants_nothing_without_network(tmp_path, sshd):
+    port, received = sshd
+    assert _git_ssh(port, tmp_path).returncode != 0
+    assert not received
+
+
+def test_ssh_goes_direct_on_host_network(tmp_path, sshd):
+    port, received = sshd
+    res = _git_ssh(port, tmp_path, network="host")
+    assert received and received[0].startswith(b"SSH-2.0-"), res.stderr
+
+
+@pytest.fixture(params=["tmp", "run-user", "home"])
+def ssh_agent(request, tmp_path, monkeypatch):
+    """A throwaway agent and key, its socket where real agents live (tmp, /run/user, ~/.ssh/agent beside a decoy key)."""
+    home = tempfile.mkdtemp(prefix="h-")  # short: sun_path caps at 104 on macOS
+    monkeypatch.setenv("HOME", home)
+    ssh_dir = Path(home) / ".ssh"
+    (ssh_dir / "agent").mkdir(parents=True)
+    (ssh_dir / "id_ed25519").write_text("DECOY-PRIVATE-KEY")
+    base = None
+    if request.param == "run-user":
+        base = f"/run/user/{os.getuid()}"
+        if not os.access(base, os.W_OK):
+            pytest.skip(f"{base} not writable")
+    elif request.param == "home":
+        base = str(ssh_dir / "agent")
+    sock_dir = tempfile.mkdtemp(prefix="ha-", dir=base)
+    sock = os.path.join(sock_dir, "a.sock")
+    agent = subprocess.Popen(["ssh-agent", "-D", "-a", sock], stdout=subprocess.DEVNULL)
+    try:
+        assert wait_until(lambda: os.path.exists(sock))
+        key = tmp_path / "key"
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "hozo-test-key", "-f", str(key)], check=True
+        )
+        subprocess.run(["ssh-add", "-q", str(key)], env={"SSH_AUTH_SOCK": sock}, check=True)
+        monkeypatch.setenv("SSH_AUTH_SOCK", sock)
+        yield sock
+    finally:
+        agent.kill()
+        agent.wait()
+        shutil.rmtree(sock_dir)
+        shutil.rmtree(home)
+
+
+def test_ssh_agent_is_forwarded(tmp_path, ssh_agent):
+    res = _run(["ssh-add", "-l"], tmp_path, profiles=["ssh-agent"])
+    assert res.returncode == 0, res.stderr
+    assert "hozo-test-key" in res.stdout
+
+
+def test_forwarded_agent_hides_the_rest_of_ssh_dir(tmp_path, ssh_agent):
+    res = _run(["/bin/sh", "-c", 'cat "$HOME/.ssh/id_ed25519"'], tmp_path, profiles=["ssh-agent"])
+    assert res.returncode != 0
+    assert "DECOY" not in res.stdout
+
+
+def test_agent_is_not_forwarded_without_the_profile(tmp_path, ssh_agent):
+    res = _run(["ssh-add", "-l"], tmp_path, env_allow=["SSH_AUTH_SOCK"])
+    assert res.returncode != 0
+    assert "hozo-test-key" not in res.stdout
 
 
 # The bash probes above can't reach a raw syscall, so these go through python3's ctypes.

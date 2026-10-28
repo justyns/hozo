@@ -1,8 +1,10 @@
 import pytest
+from conftest import policy_with_base
 
 from hozo import profiles
 from hozo.errors import ProfileError
 from hozo.paths import profiles_dir
+from hozo.profiles import Bind
 
 
 def test_load_builtin_base():
@@ -81,3 +83,32 @@ def test_invalid_yaml_raises():
     (pdir / "broken.yaml").write_text("{ broken")
     with pytest.raises(ProfileError):
         profiles.load_profile("broken")
+
+
+def test_ssh_grants_no_network_or_hosts():
+    assert "ssh" in profiles.builtin_names()
+    p = profiles.load_profile("ssh")
+    assert p.network_mode is None
+    assert p.proxy_allow_hosts == []
+
+
+def test_ssh_agent_forwards_only_the_agent_socket(tmp_path, monkeypatch):
+    assert "ssh-agent" in profiles.builtin_names()
+    sock = str(tmp_path / "agent.sock")
+    monkeypatch.setenv("SSH_AUTH_SOCK", sock)
+    p = policy_with_base(None, tmp_path, profiles=["ssh-agent"], bind_project=False)
+    assert p.binds == [Bind(source=sock, mode="ro", optional=True)]
+    assert p.env_allow == ["SSH_AUTH_SOCK"]
+
+
+def test_ssh_agent_without_an_agent_binds_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    p = policy_with_base(None, tmp_path, profiles=["ssh-agent"], bind_project=False)
+    assert p.binds == []
+
+
+def test_optional_request_bind_with_an_empty_source_binds_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    bind = Bind(source="{ssh_auth_sock}", mode="ro", optional=True)
+    p = policy_with_base(None, tmp_path, bind_project=False, binds=[bind])
+    assert p.binds == []

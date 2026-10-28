@@ -1,10 +1,4 @@
-"""Build the sandbox environment as an explicit dict
-
-Start from the host env filtered by the allow globs (or everything, when ``clear_env`` is
-false), apply explicit ``set`` values, point HTTP(S)_PROXY at the egress proxy when there
-is one, then prepend to PATH. Backends hand the result to the child as its process
-environment, so values never land in a world-readable cmdline.
-"""
+"""Build the sandbox environment as an explicit dict."""
 
 from __future__ import annotations
 
@@ -15,7 +9,7 @@ from .paths import SCRATCH_PLACEHOLDER
 from .proxy import proxy_env
 
 
-def _matches(name: str, patterns: list[str]) -> bool:
+def matches_any(name: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(name, pat) for pat in patterns)
 
 
@@ -35,14 +29,13 @@ def build_env(
     proxy_port: int | None = None,
     scratch: str | None = None,
 ) -> dict[str, str]:
-    """``proxy_port`` (when set) is the loopback port the sandbox reaches the egress proxy
-    on; it adds the HTTP(S)_PROXY vars, which win over a profile's own ``env.set``.
-    ``scratch`` is the backend's per-run temp dir, substituted for ``{scratch}``."""
+    """``proxy_port`` is the sandbox-side port of the egress proxy, and its HTTP(S)_PROXY vars
+    override ``env.set``. ``scratch`` is the per-run temp dir substituted for ``{scratch}``."""
     environ = os.environ if environ is None else environ
 
     env: dict[str, str] = {}
     for key, value in environ.items():
-        if not policy.clear_env or _matches(key, policy.env_allow):
+        if not policy.clear_env or matches_any(key, policy.env_allow):
             env[key] = value
 
     for key, value in policy.env_set.items():

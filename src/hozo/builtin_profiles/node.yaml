@@ -1,8 +1,5 @@
 name: node
-description: >-
-  npm cache writable + npm registry on the proxy allowlist. Leaves the network mode
-  unset; pair with +proxy for installs (`hozo +node +proxy -- npm install`), or run
-  without +proxy for offline use.
+description: Writable npm cache plus registry.npmjs.org on the proxy allowlist (pair with +proxy).
 
 binds:
   - source: "~/.npm"

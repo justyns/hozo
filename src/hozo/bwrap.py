@@ -1,11 +1,4 @@
-"""The bubblewrap backend: render a ResolvedPolicy into a ``bwrap`` argv and run it.
-
-``build_bwrap_argv`` is the pure renderer; ``BubblewrapBackend`` executes it (and manages
-the egress proxy for proxy mode). The env is handed to bwrap as its process environment
-rather than via ``--setenv``, so env values never land in the world-readable
-``/proc/PID/cmdline``. The system mounts (/usr, certs, /etc/*) are ordinary ``base`` binds;
-only the host-specific merged-/usr symlinks and ``--proc``/``--dev`` stay here.
-"""
+"""Render a ResolvedPolicy as a ``bwrap`` argv and run it."""
 
 from __future__ import annotations
 
@@ -30,19 +23,18 @@ from .proxy import (
     PROXY_SOCKET_TARGET,
     BackgroundProxy,
     ProxyMount,
-    bridge_script_path,
+    logger,
 )
 from .seccomp import build_seccomp_filter, host_arch
 
 # Top-level dirs that are symlinks into /usr on merged-/usr distros (Arch/EndeavourOS).
 _MERGED_USR_LINKS = ("/bin", "/sbin", "/lib", "/lib64")
 
-# Stand-in paths for `explain`: the real socket and script are per-run temporaries.
+# Stand-ins for `explain`. The socket, script and seccomp fd exist only during a run.
 _EXPLAIN_MOUNT = ProxyMount("<host-proxy.sock>", "<bridge.py>")
-# Likewise the seccomp fd, which only exists for the duration of a run.
 _EXPLAIN_SECCOMP_FD = "<seccomp-fd>"
 
-# The in-sandbox per-run temp dir behind the {scratch} placeholder.
+# Backs the {scratch} placeholder.
 SCRATCH_DIR = "/tmp/hozo-scratch"
 
 
@@ -52,9 +44,9 @@ def check_available() -> bool:
 
 
 def build_bwrap_argv(
-    policy: ResolvedPolicy, *, proxy: ProxyMount | None = None, seccomp_fd: str | None = None
+    policy: ResolvedPolicy, *, proxy: ProxyMount | None = None, seccomp_fd: int | str | None = None
 ) -> list[str]:
-    use_proxy = proxy is not None and policy.network_mode == "proxy"
+    use_proxy = proxy is not None
 
     argv = [
         "bwrap",
@@ -65,7 +57,7 @@ def build_bwrap_argv(
         "--unshare-cgroup-try",
     ]
     if seccomp_fd is not None:
-        argv += ["--seccomp", seccomp_fd]
+        argv += ["--seccomp", str(seccomp_fd)]
     if policy.network_mode in ("none", "proxy"):
         argv += ["--unshare-net"]
 
@@ -93,9 +85,8 @@ def build_bwrap_argv(
 
     argv += ["--chdir", policy.cwd]
     if use_proxy:
-        # Start the in-sandbox TCP->UDS bridge, then exec the real command. The bridge
-        # backgrounds itself once it is listening, so '&&' is both the wait and the guard:
-        # the command runs only after egress works, and not at all if it doesn't.
+        # bridge.py exits once the port listens. '&&' waits for it and skips the command if the
+        # bridge failed.
         bridge = f"python3 {BRIDGE_SCRIPT_TARGET} {PROXY_SOCKET_TARGET} {BRIDGE_PORT}"
         argv += ["sh", "-c", f"{bridge} && exec {shlex.join(policy.command)}"]
     else:
@@ -105,9 +96,8 @@ def build_bwrap_argv(
 
 @functools.cache
 def _merged_usr_links() -> tuple[str, ...]:
-    """Recreate the host's top-level /usr symlinks (/bin, /lib, ...), or bind them on a
-    non-merged-/usr distro. Host-specific, so it stays here rather than in base.yaml.
-    Targets aren't uniform (/sbin -> usr/bin, /lib64 -> usr/lib), so read each one."""
+    """Recreate the host's /bin, /lib, ... symlinks, or bind them where /usr is not merged.
+    Targets differ (/sbin -> usr/bin, /lib64 -> usr/lib), so each is read."""
     args: list[str] = []
     for link in _MERGED_USR_LINKS:
         if os.path.islink(link):
@@ -118,8 +108,6 @@ def _merged_usr_links() -> tuple[str, ...]:
 
 
 def _describe_syscalls(policy: ResolvedPolicy, *, filtered: bool) -> list[str]:
-    """Reported here, not in ``explain``'s backend-neutral header: Seatbelt cannot filter
-    syscalls, and neither can an arch with no table."""
     if not policy.syscall_deny:
         return []
     denied = ", ".join(sorted(policy.syscall_deny))
@@ -135,8 +123,6 @@ def _bind_flag(bind: Bind) -> str:
 
 
 class BubblewrapBackend(Backend):
-    """bubblewrap (bwrap)."""
-
     name = "bwrap"
 
     def is_available(self) -> bool:
@@ -153,25 +139,18 @@ class BubblewrapBackend(Backend):
 
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
         with ExitStack() as stack:
-            mount = None
-            if policy.network_mode == "proxy":
-                socket_path = stack.enter_context(_proxy_workspace())
-                stack.enter_context(BackgroundProxy(socket_path, policy.proxy_allow_hosts))
-                mount = ProxyMount(str(socket_path), bridge_script_path())
-
+            mount = stack.enter_context(_proxy(policy)) if policy.network_mode == "proxy" else None
             program = build_seccomp_filter(policy)
             seccomp_fd = stack.enter_context(_seccomp_fd(program)) if program else None
-            pass_fds = () if seccomp_fd is None else (seccomp_fd,)
-
-            argv = build_bwrap_argv(policy, proxy=mount, seccomp_fd=None if seccomp_fd is None else str(seccomp_fd))
+            argv = build_bwrap_argv(policy, proxy=mount, seccomp_fd=seccomp_fd)
             env = build_env(policy, environ=environ, proxy_port=BRIDGE_PORT if mount else None, scratch=SCRATCH_DIR)
+            pass_fds = () if seccomp_fd is None else (seccomp_fd,)
             return self._spawn(argv, env, policy, capture=capture, pass_fds=pass_fds)
 
 
 @contextmanager
 def _seccomp_fd(program: bytes):
-    """The compiled cBPF on an inherited fd. A temp file rather than a pipe, since a filter
-    larger than the pipe buffer would deadlock. bwrap reads from the current offset."""
+    """A temp file rather than a pipe, which deadlocks on a filter larger than the pipe buffer."""
     with tempfile.TemporaryFile() as handle:
         handle.write(program)
         handle.flush()
@@ -180,22 +159,20 @@ def _seccomp_fd(program: bytes):
 
 
 @contextmanager
-def _proxy_workspace():
-    """A per-run scratch dir for the proxy socket, with the proxy logger writing to a dated
-    file for the lifetime of the run. Yields the socket path."""
+def _proxy(policy: ResolvedPolicy):
+    """Run the egress proxy on a per-run socket, logging it to a dated file meanwhile."""
     base = state_dir() / "proxy"
     logs = base / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    workdir = Path(tempfile.mkdtemp(dir=str(base)))
-
-    handler = logging.FileHandler(logs / f"{date.today().isoformat()}.log")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    log = logging.getLogger("hozo.proxy")
-    log.setLevel(logging.INFO)
-    log.addHandler(handler)
-    try:
-        yield workdir / "proxy.sock"
-    finally:
-        log.removeHandler(handler)
-        handler.close()
-        shutil.rmtree(workdir, ignore_errors=True)
+    with tempfile.TemporaryDirectory(dir=base, ignore_cleanup_errors=True) as workdir:
+        handler = logging.FileHandler(logs / f"{date.today().isoformat()}.log")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        socket_path = Path(workdir) / "proxy.sock"
+        try:
+            with BackgroundProxy(socket_path, policy.proxy_allow_hosts):
+                yield ProxyMount(str(socket_path), str(Path(__file__).with_name("bridge.py")))
+        finally:
+            logger.removeHandler(handler)
+            handler.close()

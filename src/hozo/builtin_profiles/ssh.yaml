@@ -1,0 +1,39 @@
+name: ssh
+description: Tunnel git's ssh through the egress proxy (grant the port too, e.g. --allow-net=github.com:22).
+
+env:
+  set:
+    GIT_SSH_COMMAND: >-
+      ssh -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile={scratch}/known_hosts"
+      -o ProxyCommand='python3 -c "$HOZO_SSH_PROXY" %h %p'
+    # Uses % formatting because braces would expand as placeholders.
+    HOZO_SSH_PROXY: |
+      import os, socket, sys, threading
+      host, port = sys.argv[1], sys.argv[2]
+      proxy = os.environ.get("HTTPS_PROXY", "").replace("http://", "").rstrip("/")
+      if proxy:
+          proxy_host, _, proxy_port = proxy.rpartition(":")
+          sock = socket.create_connection((proxy_host, int(proxy_port)))
+          target = host + ":" + port
+          sock.sendall(("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n" % (target, target)).encode())
+          head = b""
+          while not head.endswith(b"\r\n\r\n"):  # one byte at a time, to leave the banner unread
+              byte = sock.recv(1)
+              if not byte:
+                  break
+              head += byte
+          status = head.split(b"\r\n", 1)[0].decode(errors="replace")
+          if status.split()[1:2] != ["200"]:
+              sys.exit("hozo: proxy refused %s: %s" % (target, status or "connection closed"))
+      else:
+          sock = socket.create_connection((host, int(port)))
+
+      def upstream():
+          while data := os.read(0, 65536):
+              sock.sendall(data)
+          sock.shutdown(socket.SHUT_WR)
+
+      threading.Thread(target=upstream, daemon=True).start()
+      while data := sock.recv(65536):
+          sys.stdout.buffer.write(data)
+          sys.stdout.buffer.flush()

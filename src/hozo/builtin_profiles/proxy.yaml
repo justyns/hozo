@@ -1,9 +1,5 @@
 name: proxy
-description: >-
-  Enable allowlisted HTTP(S) egress via a host-side CONNECT proxy. The sandbox keeps
-  --unshare-net (no direct IP networking) and allows NO hosts by default; grant hosts
-  by composing a profile that allows some (+node, +python, +claude) or with
-  --allow-net=HOST.
+description: Allowlisted HTTP(S) egress through a host-side proxy, with no hosts allowed by default.
 
 network:
   mode: proxy

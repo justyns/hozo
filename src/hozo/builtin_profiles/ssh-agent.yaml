@@ -1,0 +1,9 @@
+name: ssh-agent
+description: Forward the host's ssh-agent, which lets sandboxed code sign with any key it holds.
+
+env:
+  allow:
+    - SSH_AUTH_SOCK
+
+binds:
+  - { source: "{ssh_auth_sock}", mode: ro, optional: true }

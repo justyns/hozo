@@ -1,10 +1,17 @@
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
-from conftest import policy_with_base
+from conftest import policy_with_base, proxy_up, wait_until
 
 import hozo
-from hozo import seatbelt
+from hozo import cli, seatbelt
 from hozo.errors import ProfileError
 from hozo.policy import SandboxRequest, resolve_policy
 from hozo.profiles import Bind
@@ -134,11 +141,95 @@ def test_describe_reports_the_per_run_scratch(tmp_path):
     assert seatbelt._EXPLAIN_SCRATCH in rw_block
 
 
-def test_check_available_returns_bool():
-    assert isinstance(seatbelt.check_available(), bool)
-
-
 def test_explain_with_seatbelt_renders_profile(tmp_path):
     p = _macos_policy(tmp_path)
     text = hozo.explain_policy(p, backend=seatbelt.SeatbeltBackend(), environ={})
     assert "seatbelt profile:" in text and "(deny default)" in text
+
+
+class _ExecError(Exception):
+    pass
+
+
+def test_cli_run_replaces_the_process_with_sandbox_exec(tmp_path, monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr(seatbelt, "check_available", lambda: True)
+    monkeypatch.setattr(seatbelt, "_start_helper", lambda policy, cleanup: None)
+    # A regression to the run-as-a-child path then returns 0 instead of reaching execve.
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: subprocess.CompletedProcess(a, 0))
+    calls, resets = [], []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: resets.append((sig, handler)))
+
+    def fake_execve(path, argv, env):
+        calls.append((path, argv, env, os.getcwd()))
+        raise _ExecError
+
+    monkeypatch.setattr(os, "execve", fake_execve)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(_ExecError):
+        cli.main(["--", "echo", "hi"])
+
+    path, argv, env, cwd = calls[0]
+    assert path == argv[0] == seatbelt.SANDBOX_EXEC
+    assert argv[1] == "-f" and Path(argv[2]).read_text().startswith("(version 1)")
+    assert argv[3:] == ["echo", "hi"]
+    assert cwd == str(tmp_path)
+    assert os.path.realpath(env["TMPDIR"]) in Path(argv[2]).read_text()
+    assert resets == [(signal.SIGPIPE, signal.SIG_DFL), (signal.SIGXFSZ, signal.SIG_DFL)]
+    for leftover in (env["TMPDIR"], os.path.dirname(argv[2])):  # the mocked-out helper's job
+        shutil.rmtree(leftover)
+
+
+_HELPER_HOST = """
+import sys, time
+from hozo import seatbelt
+from hozo.policy import ResolvedPolicy
+print(seatbelt._start_helper(ResolvedPolicy(network_mode="proxy"), [sys.argv[1]]), flush=True)
+time.sleep(60)
+"""
+
+
+def test_helper_serves_the_proxy_until_its_parent_is_killed(tmp_path):
+    # The helper's parent stands in for the exec'd command; plain POSIX, so Linux runs it too.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    host = subprocess.Popen([sys.executable, "-c", _HELPER_HOST, str(scratch)], stdout=subprocess.PIPE, text=True)
+    port = int(host.stdout.readline())
+    assert proxy_up(port) and scratch.exists()
+
+    host.kill()
+    host.wait()
+    assert wait_until(lambda: not scratch.exists())
+    assert wait_until(lambda: not proxy_up(port))
+
+
+_FAILING_HELPER_HOST = """
+import sys
+from hozo import seatbelt
+from hozo.policy import ResolvedPolicy
+def fail(*args):
+    raise RuntimeError("proxy start failed")
+seatbelt.BackgroundProxy = fail
+seatbelt._start_helper(ResolvedPolicy(network_mode="proxy"), [sys.argv[1]])
+"""
+
+
+def test_helper_start_failure_reaches_the_callers_stderr(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    host = subprocess.run([sys.executable, "-c", _FAILING_HELPER_HOST, str(scratch)], capture_output=True, text=True)
+    assert "RuntimeError: proxy start failed" in host.stderr
+    assert "hozo helper failed to start" in host.stderr
+    assert not scratch.exists()
+
+
+def test_socket_binds_allow_connecting_to_that_socket(tmp_path):
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="hz-"), "s")  # short: sun_path caps at 104 on macOS
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(sock_path)
+    prof = _bare([Bind(source=sock_path, mode="ro"), Bind(source=str(tmp_path), mode="ro")])
+    server.close()
+    shutil.rmtree(os.path.dirname(sock_path))
+    rule = f'(allow network-outbound\n  (remote unix-socket (path-literal "{sock_path}")))'
+    assert rule in prof
+    assert prof.count("unix-socket") == 1  # the plain directory bind gets no socket rule

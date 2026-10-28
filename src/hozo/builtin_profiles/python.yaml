@@ -1,8 +1,5 @@
 name: python
-description: >-
-  uv/pip caches writable + PyPI on the proxy allowlist. Leaves the network mode
-  unset; pair with +proxy for installs (`hozo +python +proxy -- uv pip install ...`),
-  or run without +proxy for offline use.
+description: Writable uv and pip caches plus PyPI on the proxy allowlist (pair with +proxy).
 
 binds:
   - source: "~/.cache/uv"

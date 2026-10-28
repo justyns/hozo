@@ -1,7 +1,5 @@
 name: untrusted
-description: >-
-  No network and no real home; project mounted read-write in place. Layers on top of
-  base, whose deny-all env scrubbing already keeps host secrets out of the sandbox.
+description: Force network off, even when another profile enables it.
 
 network:
   mode: none

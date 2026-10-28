@@ -1,17 +1,5 @@
-"""Thin CLI over the library.
-
-Grammar (``+name`` tokens select profiles; everything after ``--`` is the command,
-kept verbatim and never shell-parsed):
-
-    hozo +p [+p ...] -- CMD [ARGS...]        # run (default verb)
-    hozo run     +p ... -- CMD ...
-    hozo explain +p ... -- CMD ...
-    hozo audit   +p ... -- CMD ...
-    hozo profile list
-
-Grants are deny-by-default — nothing is allowed unless a profile or an --allow-* flag
-grants it: --allow-net[=HOST,...], --allow-read=PATH,..., --allow-write=PATH,....
-"""
+"""Thin CLI over the library. Everything after ``--`` is the command, passed verbatim and never
+shell-parsed."""
 
 from __future__ import annotations
 
@@ -28,12 +16,11 @@ from .policy import SandboxRequest, resolve_policy
 from .profiles import Bind, available_profiles
 
 _VERBS = ("run", "explain", "profile", "audit")
-# Flags that map straight onto a SandboxRequest field.
 _VALUE_OPTS = {"--project": "project", "--network": "network"}
 _BOOL_FLAGS = {"--no-base": "no_base", "--override": "override"}
 
 _USAGE = """\
-hozo — run tools in composable sandboxes
+hozo: run tools in composable sandboxes
 
   hozo +profile [+profile ...] -- COMMAND [ARGS...]
   hozo explain +profile ... -- COMMAND
@@ -41,14 +28,14 @@ hozo — run tools in composable sandboxes
   hozo profile list
 
 Grants (deny-by-default): --allow-net[=HOST,...]  --allow-read=PATH,...  --allow-write=PATH,...
+                          --allow-env=NAME,...
 Flags: --project PATH  --network none|proxy|host  --no-base  --override  --version
 Audit: --network-only  --show-granted  --audit-out=PATH
 """
 
 
 class _UsageError(Exception):
-    """Stop parsing and exit: with a message it's an error on stderr; without one it prints
-    help. ``code`` is the process exit status (2 for errors, 0 for --help)."""
+    """``code`` is the exit status. Without a message, main prints the usage."""
 
     def __init__(self, code: int, message: str | None = None):
         super().__init__(message)
@@ -77,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
         print(_USAGE)
         return 0
 
-    # TODO: maybe argparse or click would be better
     command: list[str] = []
     if "--" in argv:
         idx = argv.index("--")
@@ -87,7 +73,6 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     profiles = [tok[1:] for tok in argv if _is_profile(tok)]
-    # Pulled out like '+profile' tokens are, so they never become SandboxRequest fields.
     audit_opts = {tok[2:].replace("-", "_"): True for tok in argv if tok in _AUDIT_BOOL_OPTS}
     audit_out = next((tok.split("=", 1)[1] for tok in argv if tok.startswith("--audit-out=")), None)
     tokens = [tok for tok in argv if not _is_profile(tok) and not _is_audit_opt(tok)]
@@ -110,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         if verb == "explain":
             print(explain_policy(policy))
             return 0
-        return SandboxRunner().run(policy).returncode
+        return SandboxRunner().exec(policy)
     except _UsageError as exc:
         if exc.message:
             print(f"hozo: {exc.message}", file=sys.stderr)
@@ -123,8 +108,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parse_flags(tokens: list[str]) -> tuple[SandboxRequest, list[str]]:
-    """Fold the flag tokens into a SandboxRequest; return it plus the leftover positionals.
-    Raises ``_UsageError`` on a bad flag."""
     request = SandboxRequest()
     positional: list[str] = []
     walker = iter(tokens)
@@ -138,17 +121,19 @@ def _parse_flags(tokens: list[str]) -> tuple[SandboxRequest, list[str]]:
             setattr(request, _VALUE_OPTS[tok], value)
         elif tok in _BOOL_FLAGS:
             setattr(request, _BOOL_FLAGS[tok], True)
-        elif tok == "--allow-net":  # bare = full host network
+        elif tok == "--allow-net":
             request.network = "host"
-        elif tok.startswith("--allow-net="):  # specific hosts -> proxy allowlist
+        elif tok.startswith("--allow-net="):
             request.network = "proxy"
             request.allow_hosts += _csv(tok)
+        elif tok.startswith("--allow-env="):
+            request.env_allow += _csv(tok)
         elif tok.startswith("--allow-read="):
             request.binds += _binds(tok, "ro")
         elif tok.startswith("--allow-write="):
             request.binds += _binds(tok, "rw")
-        elif tok in ("--allow-read", "--allow-write"):
-            raise _UsageError(2, f"{tok} needs paths, e.g. {tok}=/path/a,/path/b")
+        elif tok in ("--allow-env", "--allow-read", "--allow-write"):
+            raise _UsageError(2, f"{tok} needs values, e.g. {tok}=A,B")
         elif tok.startswith("-"):
             raise _UsageError(2, f"unknown option {tok!r}")
         else:
@@ -167,8 +152,7 @@ def _cmd_audit(
     network_only: bool = False,
     show_granted: bool = False,
 ) -> int:
-    """The only place audit prints or writes a file. Report goes to stderr so the audited
-    command's own stdout stays pipeable; its exit code passes through."""
+    """Prints the report to stderr to keep the audited command's stdout pipeable."""
     print(audit.BANNER, end="", file=sys.stderr)
     report = audit.run_audit(request, network_only=network_only)
     print("\n" + audit.render_report(report, show_granted=show_granted), end="", file=sys.stderr)
@@ -182,8 +166,7 @@ def _cmd_audit(
 
 
 def _temp_profile(name: str) -> Path:
-    """Default output lands in the temp dir, not the project — an audit shouldn't drop an
-    untracked file into whatever repo you happen to be standing in."""
+    """Temp file outside the project, to keep untracked files out of the repo."""
     fd, path = tempfile.mkstemp(prefix=f"hozo-{name}-", suffix=".yaml")
     os.close(fd)
     return Path(path)
@@ -195,7 +178,3 @@ def _cmd_profile(args: list[str]) -> int:
             print(f"{name:20} {origin}")
         return 0
     raise _UsageError(2, "usage: hozo profile list")
-
-
-if __name__ == "__main__":
-    sys.exit(main())
