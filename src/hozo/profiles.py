@@ -1,9 +1,4 @@
-"""Profile dataclasses + YAML loading/validation.
-
-A profile is one composable layer. Built-ins ship in ``builtin_profiles/``; users
-add or override by dropping ``<name>.yaml`` into ``~/.config/hozo/profiles/`` (user
-wins on the same name).
-"""
+"""Profile dataclasses and YAML loading."""
 
 from __future__ import annotations
 
@@ -35,11 +30,11 @@ class Bind:
 class Profile:
     name: str
     description: str = ""
-    source: str = ""
-    network_mode: str | None = None  # None means "unset" (resolver default applies)
-    clear_env: bool | None = None  # None == unset; resolver defaults to True (scrub)
+    network_mode: str | None = None
+    clear_env: bool | None = None
     cwd: str | None = None
-    home: str | None = None  # absolute path for $HOME — a fresh empty dir each run
+    # bwrap mounts an empty dir here. Seatbelt leaves the real dir in place.
+    home: str | None = None
     env_allow: list[str] = field(default_factory=list)
     env_set: dict[str, str] = field(default_factory=dict)
     prepend_path: list[str] = field(default_factory=list)
@@ -49,11 +44,10 @@ class Profile:
     dev: bool = False
     proxy_allow_hosts: list[str] = field(default_factory=list)
     syscall_deny: list[str] = field(default_factory=list)
-    syscall_action: str | None = None  # None == unset; resolver defaults to 'errno'
+    syscall_action: str | None = None
 
 
 def _abs_or_placeholder(value: str) -> bool:
-    """True if a path is absolute, starts with ~, or contains a {placeholder}."""
     return value.startswith(("/", "~")) or "{" in value
 
 
@@ -93,7 +87,7 @@ def parse_profile(data, source: str) -> Profile:
     if not isinstance(name, str) or not name:
         raise ProfileError(f"{source}: missing or invalid 'name'")
 
-    profile = Profile(name=name, description=str(data.get("description", "")), source=source)
+    profile = Profile(name=name, description=str(data.get("description", "")))
 
     network = data.get("network")
     if isinstance(network, dict) and network.get("mode") is not None:
@@ -138,7 +132,7 @@ def parse_profile(data, source: str) -> Profile:
     syscalls = data.get("syscalls")
     if isinstance(syscalls, dict):
         profile.syscall_deny = _str_list(syscalls.get("deny"), f"{source}: syscalls.deny")
-        # Every arch, so a typo fails on macOS too. The host arch is rechecked at compile.
+        # known_syscalls() spans every arch. Compile rechecks the host arch.
         unknown = sorted(set(profile.syscall_deny) - known_syscalls())
         if unknown:
             raise ProfileError(f"{source}: unknown syscall in syscalls.deny: {', '.join(unknown)}")
@@ -160,13 +154,6 @@ def parse_profile(data, source: str) -> Profile:
     return profile
 
 
-def _load_yaml(text: str, source: str) -> dict:
-    try:
-        return yaml.safe_load(text) or {}
-    except yaml.YAMLError as exc:
-        raise ProfileError(f"{source}: invalid YAML: {exc}") from exc
-
-
 @functools.cache
 def _builtin_dir():
     return resources.files("hozo").joinpath("builtin_profiles")
@@ -177,7 +164,6 @@ def builtin_names() -> list[str]:
 
 
 def default_base_name() -> str:
-    """The implicit base profile for this platform: macOS needs a different system-path set."""
     return "base-macos" if platform.system() == "Darwin" else "base"
 
 
@@ -194,10 +180,13 @@ def available_profiles() -> dict[str, str]:
 def load_profile(name: str) -> Profile:
     user_file = profiles_dir() / f"{name}.yaml"
     if user_file.is_file():
-        text = user_file.read_text(encoding="utf-8")
-        return parse_profile(_load_yaml(text, str(user_file)), str(user_file))
-    builtin = _builtin_dir().joinpath(f"{name}.yaml")
-    if builtin.is_file():
-        text = builtin.read_text(encoding="utf-8")
-        return parse_profile(_load_yaml(text, f"<builtin:{name}>"), f"<builtin:{name}>")
-    raise ProfileError(f"profile not found: {name!r}")
+        entry, label = user_file, str(user_file)
+    else:
+        entry, label = _builtin_dir().joinpath(f"{name}.yaml"), f"<builtin:{name}>"
+        if not entry.is_file():
+            raise ProfileError(f"profile not found: {name!r}")
+    try:
+        data = yaml.safe_load(entry.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ProfileError(f"{label}: invalid YAML: {exc}") from exc
+    return parse_profile(data, label)

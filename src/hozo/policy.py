@@ -1,10 +1,8 @@
-"""Resolve a SandboxRequest into a ResolvedPolicy
+"""Resolve a SandboxRequest into a ResolvedPolicy.
 
-Merge order: implicit ``base`` -> named profiles (in CLI order) -> request inline
-overrides (highest priority). Binds and env ``set`` raise ``MergeConflictError`` on
-conflicting values (unless ``request.override``); scalar singletons (home, cwd) take
-the last layer's value and network takes the most-restrictive. Inline request
-fields always win.
+Layers merge in order: base, named profiles, then the request's inline fields. Conflicting
+binds or env values raise MergeConflictError unless ``override`` is set. Home and cwd take the
+last layer's value, and network takes the most restrictive.
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .env import matches_any
 from .errors import HozoError, MergeConflictError
 from .paths import SCRATCH_PLACEHOLDER, expand_path
 from .profiles import NETWORK_MODES, Bind, Profile, default_base_name, load_profile
@@ -30,6 +29,7 @@ class SandboxRequest:
     env: dict[str, str] = field(default_factory=dict)
     network: str | None = None
     allow_hosts: list[str] = field(default_factory=list)
+    env_allow: list[str] = field(default_factory=list)
     binds: list[Bind] = field(default_factory=list)
     bind_project: bool = True
     no_base: bool = False
@@ -38,14 +38,13 @@ class SandboxRequest:
 
 @dataclass
 class ResolvedPolicy:
-    """Defaults here *are* the resolver's starting point — ``_merge_layers`` folds layers
-    onto a bare ``ResolvedPolicy()`` rather than restating them."""
+    """``_merge_layers`` starts from these defaults."""
 
     command: list[str] = field(default_factory=list)
     profiles_applied: list[str] = field(default_factory=list)
     network_mode: str = "none"
-    clear_env: bool = True  # secure default; a layer can opt out with clear_env: false
-    cwd: str = "{project}"  # expanded against the project path by resolve_policy
+    clear_env: bool = True
+    cwd: str = "{project}"
     home: str | None = None
     binds: list[Bind] = field(default_factory=list)
     tmpfs: list[str] = field(default_factory=list)
@@ -71,10 +70,12 @@ def _absolute(value: str, label: str) -> str:
     return value
 
 
-def _expand_bind(bind: Bind, project: str) -> Bind:
-    source = expand_path(bind.source, project=Path(project))
-    _absolute(source, "bind source")
-    return Bind(source=source, mode=bind.mode, optional=bind.optional)
+def _add_expanded_bind(binds: list[Bind], bind: Bind, project: Path, *, override: bool) -> None:
+    """Drops an optional bind whose source expands to nothing."""
+    source = expand_path(bind.source, project=project)
+    if source or not bind.optional:
+        expanded = Bind(source=_absolute(source, "bind source"), mode=bind.mode, optional=bind.optional)
+        _add_bind(binds, expanded, override=override)
 
 
 def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
@@ -82,7 +83,6 @@ def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
         if existing.source != bind.source:
             continue
         if existing.mode == bind.mode:
-            # same mount from two layers; a required bind wins over an optional one
             existing.optional = existing.optional and bind.optional
             return
         if override:
@@ -94,7 +94,7 @@ def _add_bind(binds: list[Bind], bind: Bind, *, override: bool) -> None:
     binds.append(bind)
 
 
-def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> ResolvedPolicy:
+def _merge_layers(layers: list[Profile], *, project: Path, override: bool) -> ResolvedPolicy:
     policy = ResolvedPolicy(profiles_applied=[layer.name for layer in layers])
     explicit_modes: list[str] = []
     for layer in layers:
@@ -106,9 +106,8 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
         policy.prepend_path += layer.prepend_path
         _union(policy.tmpfs, layer.tmpfs)
         for bind in layer.binds:
-            _add_bind(policy.binds, _expand_bind(bind, project), override=override)
+            _add_expanded_bind(policy.binds, bind, project, override=override)
         _union(policy.proxy_allow_hosts, layer.proxy_allow_hosts)
-        # Denies union so composing only tightens; the action is a scalar like home/cwd.
         _union(policy.syscall_deny, layer.syscall_deny)
         if layer.syscall_action:
             policy.syscall_action = layer.syscall_action
@@ -129,8 +128,7 @@ def _merge_layers(layers: list[Profile], *, project: str, override: bool) -> Res
 
 
 def _apply_xdg_defaults(policy: ResolvedPolicy) -> None:
-    """Point XDG dirs at the (writable) sandbox home so cache binds line up. A profile
-    that sets them explicitly wins. Lives here so ``explain`` reports them truthfully."""
+    """Point XDG dirs under the sandbox home unless a profile sets them."""
     if not policy.home:
         return
     for var, sub in (
@@ -143,9 +141,7 @@ def _apply_xdg_defaults(policy: ResolvedPolicy) -> None:
 
 
 def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
-    # Absolutize so a relative --project (e.g. '..') resolves predictably before it
-    # becomes a bind source.
-    project = os.path.abspath(request.project or os.getcwd())
+    project = Path(os.path.abspath(request.project or os.getcwd()))
 
     layers: list[Profile] = []
     if not request.no_base:
@@ -155,23 +151,20 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
 
     policy = _merge_layers(layers, project=project, override=request.override)
 
-    # Expand placeholders ({project}, {home}, ~, ...) in the working dir, home, and PATH.
-    proj = Path(project)
-    policy.cwd = _absolute(expand_path(policy.cwd, project=proj), "working dir")
+    policy.cwd = _absolute(expand_path(policy.cwd, project=project), "working dir")
     if policy.home:
-        policy.home = _absolute(expand_path(policy.home, project=proj), "home")
-    policy.prepend_path = [expand_path(p, project=proj) for p in policy.prepend_path]
+        policy.home = _absolute(expand_path(policy.home, project=project), "home")
+    policy.prepend_path = [expand_path(p, project=project) for p in policy.prepend_path]
 
-    # The project is mounted read-write in place at its real host path; cwd defaults to it.
     if request.bind_project:
-        _add_bind(policy.binds, Bind(source=project, mode="rw"), override=True)
+        _add_bind(policy.binds, Bind(source=str(project), mode="rw"), override=True)
 
-    # Inline request fields win unconditionally over profiles.
     policy.env_set.update(request.env)
+    _union(policy.env_allow, request.env_allow)
 
-    # Braced values only, so a value that merely starts with '~' stays literal.
+    # Only values with a {placeholder} expand. A leading '~' stays literal.
     policy.env_set = {
-        key: expand_path(value, project=proj, defer=(SCRATCH_PLACEHOLDER,)) if "{" in value else value
+        key: expand_path(value, project=project, defer=(SCRATCH_PLACEHOLDER,)) if "{" in value else value
         for key, value in policy.env_set.items()
     }
     if request.network is not None:
@@ -183,9 +176,8 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
             raise HozoError(f"invalid port in allow_hosts: {host!r}")
     _union(policy.proxy_allow_hosts, request.allow_hosts)
     for bind in request.binds:
-        _add_bind(policy.binds, _expand_bind(bind, project), override=True)
+        _add_expanded_bind(policy.binds, bind, project, override=True)
 
-    # Identity: HOME follows the sandbox home; USER/LOGNAME default to the real user.
     if policy.home:
         policy.env_set.setdefault("HOME", policy.home)
     user = getpass.getuser()
@@ -193,6 +185,9 @@ def resolve_policy(request: SandboxRequest) -> ResolvedPolicy:
     policy.env_set.setdefault("LOGNAME", user)
 
     _apply_xdg_defaults(policy)
+
+    # Requested passthroughs use the host value, not a default.
+    policy.env_set = {key: value for key, value in policy.env_set.items() if not matches_any(key, request.env_allow)}
 
     policy.command = list(request.command)
     return policy

@@ -27,7 +27,6 @@ def state_dir() -> Path:
 
 
 def profiles_dir() -> Path:
-    """Where user-defined profile YAML files live."""
     return config_dir() / "profiles"
 
 
@@ -35,9 +34,10 @@ def profiles_dir() -> Path:
 _RESOLVERS = {
     "home": Path.home,
     "user": getpass.getuser,
+    "ssh_auth_sock": lambda: os.environ.get("SSH_AUTH_SOCK", ""),
 }
 
-# Only a backend knows the per-run temp dir, so build_env fills this in after resolution.
+# Filled in by build_env, since only a backend knows the per-run temp dir.
 SCRATCH_PLACEHOLDER = "{scratch}"
 
 
@@ -45,7 +45,6 @@ def expand_path(value: str, *, project: Path | None = None, defer: tuple[str, ..
     """Expand Hozo placeholders and ``~`` in a path. Unknown placeholders raise; anything
     in ``defer`` is left for a later pass."""
 
-    # TODO: Is it worth using jinja or something for this?
     def resolve(match: re.Match) -> str:
         name = match.group(1)
         if match.group(0) in defer:

@@ -1,9 +1,6 @@
-"""In-sandbox TCP->UDS bridge: forward localhost:<port> to the host proxy's Unix socket.
+"""In-sandbox bridge from 127.0.0.1:<port> to the host proxy's Unix socket.
 
-Runs under the sandbox's own python3 (bound in read-only), so ``HTTP(S)_PROXY`` pointed at
-127.0.0.1:<port> reaches the host CONNECT proxy while the sandbox stays --unshare-net.
-Invoked as: ``python3 bridge.py <unix-socket> <listen-port>``, which returns as soon as the
-port is accepting connections (see ``main``) so the caller can chain the real command.
+Run as ``python3 bridge.py <unix-socket> <listen-port>``. It returns once the port is listening.
 """
 
 import os
@@ -52,9 +49,7 @@ def main():
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("127.0.0.1", port))
     server.listen(16)
-    # Serve from a child and exit the parent, so whoever launched us blocks exactly until
-    # the port is listening — no sleep-and-hope, and a failed bind is a non-zero exit
-    # rather than a command that starts with a dead proxy.
+    # Serve from a child so the parent exits only once the port is listening.
     if os.fork() > 0:
         os._exit(0)
     while True:

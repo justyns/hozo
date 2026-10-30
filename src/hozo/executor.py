@@ -18,12 +18,17 @@ class SandboxRunner:
         capture: bool = False,
         environ: dict[str, str] | None = None,
     ) -> SandboxResult:
+        return self.backend.run(self._policy(request_or_policy), environ=environ, capture=capture)
+
+    def exec(self, request_or_policy: SandboxRequest | ResolvedPolicy, *, environ: dict[str, str] | None = None) -> int:
+        return self.backend.exec(self._policy(request_or_policy), environ=environ)
+
+    def _policy(self, request_or_policy: SandboxRequest | ResolvedPolicy) -> ResolvedPolicy:
         if isinstance(request_or_policy, ResolvedPolicy):
             policy = request_or_policy
         else:
             policy = resolve_policy(request_or_policy)
 
         if not self.backend.is_available():
-            raise HozoError(f"backend {self.backend.name!r} not available — install it. Hozo will not run unsandboxed.")
-
-        return self.backend.run(policy, environ=environ, capture=capture)
+            raise HozoError(f"backend {self.backend.name!r} is not installed. Hozo will not run unsandboxed.")
+        return policy

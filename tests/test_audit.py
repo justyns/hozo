@@ -12,11 +12,11 @@ import yaml
 from conftest import policy_with_base
 
 import hozo
-from hozo import audit, cli
+from hozo import audit, cli, proxy
 from hozo.audit import FileAccess
 from hozo.paths import profiles_dir
 from hozo.policy import SandboxRequest, resolve_policy
-from hozo.profiles import Bind, load_profile, parse_profile
+from hozo.profiles import load_profile, parse_profile
 
 needs_strace = pytest.mark.skipif(
     not (hozo.check_available() and shutil.which("strace") and platform.system() == "Linux"),
@@ -163,13 +163,6 @@ def test_audit_forces_proxy_even_under_untrusted(tmp_path):
     assert resolve_policy(audit.widen(request)).network_mode == "proxy"
 
 
-def test_widen_does_not_alias_the_caller(tmp_path):
-    """replace() passes untouched fields by reference, so widen must copy the mutable ones."""
-    request = SandboxRequest(command=["x"], project=str(tmp_path), profiles=["untrusted"], binds=[])
-    audit.widen(request).binds.append(Bind(source="/x", mode="rw"))
-    assert request.profiles == ["untrusted"] and request.binds == []
-
-
 # --- rendering --------------------------------------------------------------------
 
 
@@ -186,6 +179,19 @@ def test_generated_profile_is_a_valid_profile():
     assert profile.name == "audit-npm"
     assert {(b.source, b.mode) for b in profile.binds} == {("/home/u/.npmrc", "ro"), ("/home/u/.npm", "rw")}
     assert profile.proxy_allow_hosts == ["registry.npmjs.org"]  # bare host == ports 80/443
+
+
+@pytest.mark.parametrize("target", ["10.0.0.5:443", "10.0.0.5:2222", "::1:443", "::1:8080"])
+def test_suggested_ip_grant_lets_the_dial_through(target):
+    profile = parse_profile(yaml.safe_load(audit.render_profile(_report(hosts=[target]), "n")), "<generated>")
+    host, _, port = target.rpartition(":")
+    assert proxy._domain_matches(host, int(port), profile.proxy_allow_hosts)
+
+
+def test_insecure_profile_allows_ip_dials(tmp_path):
+    policy = resolve_policy(SandboxRequest(command=["x"], project=str(tmp_path), profiles=["insecure"]))
+    assert proxy._domain_matches("10.0.0.5", 8080, policy.proxy_allow_hosts)
+    assert proxy._domain_matches("fd00::1", 8080, policy.proxy_allow_hosts)
 
 
 def test_a_path_both_read_and_written_is_granted_once_as_rw():

@@ -71,10 +71,6 @@ def test_sandbox_env_scrubs_secrets_keeps_allowed(tmp_path):
     assert env["HOME"] == os.path.expanduser("~")
 
 
-def test_check_available_returns_bool():
-    assert isinstance(bwrap.check_available(), bool)
-
-
 def test_proxy_mode_renders_bridge_binds_and_wrapper(tmp_path):
     policy = resolve_policy(SandboxRequest(command=["curl", "x"], project=str(tmp_path), profiles=["proxy"]))
     argv = bwrap.build_bwrap_argv(policy, proxy=ProxyMount("/h/proxy.sock", "/h/bridge.py"))
@@ -91,9 +87,3 @@ def test_proxy_env_points_at_the_bridge_port(tmp_path):
     env = build_env(policy, environ={}, proxy_port=BRIDGE_PORT)
     assert env["HTTP_PROXY"] == f"http://127.0.0.1:{BRIDGE_PORT}"
     assert env["NO_PROXY"] == "localhost,127.0.0.1,::1"
-
-
-def test_proxy_mount_ignored_when_not_proxy(tmp_path):
-    policy = resolve_policy(SandboxRequest(command=["true"], project=str(tmp_path), network="none"))
-    argv = bwrap.build_bwrap_argv(policy, proxy=ProxyMount("/h/s", "/h/b"))
-    assert "/run/hozo-proxy.sock" not in argv

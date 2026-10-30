@@ -1,13 +1,4 @@
-"""Sandbox backend base class and selection.
-
-A ``Backend`` translates a ``ResolvedPolicy`` into a runtime-specific invocation and runs
-it. Concrete backends live in their own modules (``bwrap.py``, ``seatbelt.py``);
-``get_backend`` is a plain in-code factory, not plugin discovery.
-
-How that invocation is *shaped* is the backend's business alone — an argv for bwrap, an
-SBPL profile for Seatbelt — so callers ask for ``describe()`` rather than reaching for a
-renderer of their own.
-"""
+"""Backend base class and platform-aware selection."""
 
 from __future__ import annotations
 
@@ -33,13 +24,11 @@ class SandboxResult:
 
 
 class Backend(ABC):
-    """A sandbox runtime. Subclasses translate a policy into an invocation and execute it."""
-
     name: str
 
     @abstractmethod
     def is_available(self) -> bool:
-        """True if the runtime binary is installed."""
+        pass
 
     @abstractmethod
     def describe(self, policy: ResolvedPolicy) -> str:
@@ -47,7 +36,11 @@ class Backend(ABC):
 
     @abstractmethod
     def run(self, policy: ResolvedPolicy, *, environ=None, capture: bool = False) -> SandboxResult:
-        """Execute the policy and return the result."""
+        pass
+
+    def exec(self, policy: ResolvedPolicy, *, environ=None) -> int:
+        """Seatbelt overrides this to replace the process."""
+        return self.run(policy, environ=environ).returncode
 
     def _spawn(
         self,
@@ -59,9 +52,8 @@ class Backend(ABC):
         cwd: str | None = None,
         pass_fds: tuple[int, ...] = (),
     ) -> SandboxResult:
-        """Run the built invocation. ``env`` is the child's whole process environment (not
-        passed as runtime flags), so values stay out of the world-readable cmdline.
-        ``pass_fds`` keeps those descriptors open at the same numbers in the child."""
+        """``env`` is the child's whole environment, kept out of the argv so values never reach the
+        world-readable cmdline."""
         extra = {"capture_output": True, "text": True} if capture else {}
         proc = subprocess.run(argv, env=env, cwd=cwd, pass_fds=pass_fds, **extra)
         return SandboxResult(proc.returncode, proc.stdout, proc.stderr, policy, argv, self.name)
@@ -72,9 +64,9 @@ def get_backend(name: str | None = None) -> Backend:
         system = platform.system()
         name = _PLATFORM_BACKENDS.get(system)
         if name is None:
-            supported = ", ".join(f"{os} ({backend})" for os, backend in _PLATFORM_BACKENDS.items())
+            supported = ", ".join(f"{system_name} ({backend})" for system_name, backend in _PLATFORM_BACKENDS.items())
             raise HozoError(f"unsupported platform {system!r}; hozo supports {supported}")
-    # Imported lazily: both backend modules import this one, so a top-level import cycles.
+    # Lazy imports avoid a cycle, since bwrap.py and seatbelt.py import this module.
     if name == "bwrap":
         from .bwrap import BubblewrapBackend
 

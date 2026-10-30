@@ -1,8 +1,4 @@
-"""Hozo: run risky/dev tools in named, composable sandboxes.
-
-A Python library with a thin CLI on top; import the public names below directly from
-``hozo``. ``SandboxRunner.run`` is the only part with side effects.
-"""
+"""Hozo runs tools in named, composable sandboxes."""
 
 from importlib.metadata import PackageNotFoundError, version
 
@@ -19,12 +15,10 @@ from .seccomp import build_seccomp_filter
 
 
 def run(request, **kwargs) -> SandboxResult:
-    """Convenience wrapper: ``SandboxRunner().run(request, **kwargs)``."""
     return SandboxRunner().run(request, **kwargs)
 
 
 def check_available() -> bool:
-    """True if this platform's sandbox runtime (bwrap / sandbox-exec) is installed."""
     return get_backend().is_available()
 
 

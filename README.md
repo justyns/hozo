@@ -1,6 +1,6 @@
 # Hozo
 
-Simple wrapper around [`bubblewrap`](https://github.com/containers/bubblewrap) (Linux) and [`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html) / Seatbelt (macOS) that provides composable profiles for sandboxing. The backend is chosen automatically by platform; the CLI and profiles are the same on both.
+Composable sandbox profiles over [`bubblewrap`](https://github.com/containers/bubblewrap) on Linux and [`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html) (Seatbelt) on macOS.
 
 Read/write/network access are all deny by default except for a minimal set of directories.
 
@@ -9,7 +9,7 @@ Read/write/network access are all deny by default except for a minimal set of di
 ## Requirements
 
 - Linux with `bubblewrap` (`bwrap`), or macOS with `sandbox-exec` (ships with macOS).
-- Python ≥ 3.11. On Linux, proxy mode also needs `python3` inside the sandbox (for the egress bridge); macOS needs nothing extra.
+- Python 3.11+. On Linux, proxy mode runs the host's `python3` inside the sandbox.
 
 ## Install
 
@@ -25,8 +25,8 @@ hozo +untrusted -- make test          # no network, no secrets, cwd writable
 hozo +untrusted -- bash               # sandboxed shell
 hozo explain +untrusted -- echo hi    # shows the resolved policy (bwrap args / SBPL profile)
 hozo +node +proxy -- npm install      # network limited to the npm registry
-hozo --allow-net=pypi.org -- pip install requests   # grant just this host
-hozo --allow-read=/etc/hosts +untrusted -- cat /etc/hosts
+hozo --allow-net=github.com -- git clone https://github.com/containers/bubblewrap   # grant just this host
+hozo --allow-read=$HOME/.gitconfig +untrusted -- git config -l
 hozo audit -- ./some-tool             # what would this need? (see below)
 hozo profile list                     # built-in + your profiles
 ```
@@ -37,34 +37,26 @@ This allows you to run commands like `make` or `pytest` in a sandboxed environme
 
 ## Profiles
 
-Profiles are composable YAML files that define what is allowed inside the sandbox.  Multiple profiles can be combined and merged to create a final policy for the sandbox.
+Profiles are YAML files merged in command-line order. Put your own in `~/.config/hozo/profiles/<name>.yaml`. A user profile overrides a built-in of the same name. `hozo profile list` shows what's available, and `hozo explain +a +b -- cmd` shows the merged result.
 
-Several built-in profiles are provided with Hozo, but you can create your own custom profiles by putting them in `~/.config/hozo/profiles/<name>.yaml`.  Built-in profiles can also be overridden by a user profile of the same name.
+`base` (`base-macos` on macOS) applies to every run unless you pass `--no-base`. Other profiles add access. `+proxy` routes egress through a host-side proxy that allows no hosts until a profile or `--allow-net=HOST` grants them.
 
-`hozo profile list` shows what's available.  `hozo explain +a +b -- cmd` shows the merged result.
+Command-line grants:
 
-## Policies
-
-Profiles are deny-by-default.  The `base` profile always applies, and other profiles can be added to grant more access.
-
-Network is also off by default.  The `+proxy` profile enables egress through a host-side proxy, but still allows no hosts by default.  Grant hosts with `--allow-net=HOST,HOST`.
-
-Ad-hoc allows can be granted on the cli:
-
-- `--allow-net=HOST,HOST` allows connecting to these hosts via the proxy
-- `--allow-net` with no value opens full host networking, no proxy required
-- `--allow-read=PATH,PATH` / `--allow-write=PATH,PATH` allows reading/writing to specific paths.
+- `--allow-net=HOST,HOST` allows these hosts through the proxy
+- `--allow-net=10.0.0.0/8,[fd00::/8]:443` allows IPs
+- `--allow-net` with no value allows all egress
+- `--allow-read=PATH,PATH` / `--allow-write=PATH,PATH` mount these paths read-only / read-write
+- `--allow-env=NAME,NAME` passes these environment variables through
 
 ### Syscall filtering (Linux)
 
-`base` loads a seccomp filter denying `io_uring_*`, `bpf`, `userfaultfd`,
-`perf_event_open`, the kernel keyring, and module/kexec loading: syscalls with a history of
-kernel privilege-escalation bugs. Denied calls return `ENOSYS`, which callers that probe for
-a feature handle as "unsupported". `unshare` and `ptrace` stay allowed, so nested sandboxes
-and `hozo audit` keep working.
+On Linux, `base` loads a seccomp filter that denies `io_uring_*`, `bpf`, `userfaultfd`,
+`perf_event_open`, `open_by_handle_at`, the kernel keyring, and module/kexec loading. Denied
+calls return `ENOSYS`. `unshare` and `ptrace` stay allowed for nested sandboxes and `hozo audit`.
 
-A tool that needs one of these has to override `base`, since denies only accumulate across
-profiles.
+Denies accumulate across profiles. `action` takes the last profile's value, so a profile that
+sets `action: log` permits every denied call and records it.
 
 ```yaml
 syscalls:
@@ -73,12 +65,10 @@ syscalls:
     - perf_event_open
 ```
 
-Denies from every applied profile are unioned. Ignored under macOS Seatbelt.
-
 ## Finding out what a tool needs
 
-If you want to build a new profile for a tool or command, the easiest way to start
-is by using `hozo audit`.  It runs the command in a sandbox with a very permissive policy, and reports what it accessed.
+`hozo audit` runs the command with every host path readable and all egress allowed, and lists
+what the requested profiles would deny.
 
 ```bash
 hozo audit +node -- npm install       # what does npm need beyond +node?
@@ -87,16 +77,10 @@ hozo audit --show-granted -- ./tool   # also show which existing grants got used
 hozo audit --audit-out=p.yaml -- make # write the suggested profile somewhere specific
 ```
 
-A profile is generated in a temporary file and printed to stdout.  You can review it and 
-make changes before saving it to your own profile directory.
+If the command touched anything outside the policy, audit writes a suggested profile to a temp
+file (or `--audit-out`) and prints its path. Review it, then copy it into your profile directory.
 
 ## Network egress
-
-Network egress is off by default.  There are three modes:
-
-- Allow all egress.
-- Allow egress to specific hosts.
-- No egress at all.
 
 ```bash
 hozo +proxy -- curl https://pypi.org/                        # blocked: no hosts granted
@@ -107,13 +91,13 @@ hozo +python +proxy -- uv pip install ruff                   # +python grants Py
 
 ## Everyday use
 
-To launch a tool sandboxed without typing the full command each time, use a shell alias:
+Use a shell alias to run a tool sandboxed by default:
 
 ```bash
 alias claude='hozo +claude -- claude'
 ```
 
-A tool starts with a clean home: `$HOME` keeps its real path, but nothing under it is visible unless a profile binds it explicitly. To persist a tool's login/config, bind its config dir read-write in a profile — it's made available at the same path inside the sandbox:
+`$HOME` keeps its real path but starts empty. To keep a tool's login or config, bind its config dir read-write in a profile:
 
 ```yaml
 # ~/.config/hozo/profiles/mytool.yaml
@@ -122,14 +106,6 @@ binds:
   - { source: "~/.config/mytool", mode: rw, optional: true }
 ```
 
-## Development
-
-```bash
-uv run pytest
-uv run ruff check src tests
-uv run black src tests
-```
-
 ## Status
 
-This is a personal project for my own needs. Use at your own risk.  Issues and PRs welcome.
+Personal project. Use at your own risk. Issues and PRs welcome.

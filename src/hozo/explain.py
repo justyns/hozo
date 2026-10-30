@@ -1,11 +1,4 @@
-"""Human-readable audit of a ResolvedPolicy.
-
-Lists the backend, profiles, network, home, binds, writable host paths, the env var
-*names* the sandbox runs with, the command, and finally the backend's own rendering of
-what it would run. Env values never appear, so explain output is always safe to paste.
-
-Nothing here is backend-specific: the tail comes from ``Backend.describe``.
-"""
+"""Render a ResolvedPolicy for humans. Shows env var names, never values."""
 
 from __future__ import annotations
 
@@ -30,7 +23,7 @@ def explain_policy(
     ]
 
     if policy.network_mode == "proxy":
-        hosts = ", ".join(policy.proxy_allow_hosts) or "(none — nothing reachable)"
+        hosts = ", ".join(policy.proxy_allow_hosts) or "(none)"
         lines.append(f"Network:  proxy (allow: {hosts})")
     else:
         lines.append(f"Network:  {policy.network_mode}")
@@ -47,7 +40,7 @@ def explain_policy(
     writable = [bind.source for bind in policy.binds if bind.mode == "rw"]
     lines.append("Writable host paths: " + (", ".join(writable) or "(none)"))
 
-    # Names only, so the placeholder port stands in for the per-run one.
+    # Only names are shown, so port 0 stands in for the per-run port.
     proxy_port = 0 if policy.network_mode == "proxy" else None
     env_names = sorted(build_env(policy, environ=environ, proxy_port=proxy_port))
     lines.append("Env:      " + (", ".join(env_names) or "(none)"))

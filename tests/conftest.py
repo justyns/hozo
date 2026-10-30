@@ -1,4 +1,7 @@
 import platform
+import socket
+import sys
+import time
 
 import pytest
 
@@ -6,6 +9,10 @@ from hozo.paths import profiles_dir
 from hozo.policy import SandboxRequest, resolve_policy
 
 linux_only = pytest.mark.skipif(platform.system() != "Linux", reason="bwrap and syscall filtering are Linux-only")
+macos_only = pytest.mark.skipif(platform.system() != "Darwin", reason="Seatbelt is macOS-only")
+
+# The CLI in a process of its own: on macOS `run` replaces the process with sandbox-exec.
+HOZO_CLI = [sys.executable, "-m", "hozo"]
 
 
 @pytest.fixture
@@ -40,3 +47,18 @@ def policy_with_base(base, tmp_path, *, profiles=(), **kw):
     kw.setdefault("project", str(tmp_path))
     layers = [*([base] if base else []), *profiles]
     return resolve_policy(SandboxRequest(no_base=True, profiles=layers, **kw))
+
+
+def proxy_up(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+def wait_until(condition):
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return condition()

@@ -5,6 +5,7 @@ with the "insecure" profile so nothing is actually blocked in this mode.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ from .executor import SandboxRunner
 from .paths import state_dir
 from .policy import ResolvedPolicy, SandboxRequest, resolve_policy
 from .profiles import Bind
+from .proxy import logger
 
 AUDIT_PROFILE = "insecure"
 
@@ -162,7 +164,9 @@ def _too_broad(path: str) -> bool:
 
 def _host_pattern(target: str) -> str:
     host, _, port = target.rpartition(":")
-    return host if port in ("80", "443") else target
+    if port in ("80", "443"):
+        return host
+    return f"[{host}]:{port}" if ":" in host else target
 
 
 def profile_name(command: list[str]) -> str:
@@ -219,12 +223,11 @@ def render_profile(report: AuditReport, name: str) -> str:
     if granted:
         lines += ["binds:", *(_bind_line(b) for b in granted)]
     if hosts:
-        lines += ["proxy:", "  allow_hosts:", *(f"    - {host}" for host in hosts)]
+        lines += ["proxy:", "  allow_hosts:", *(f"    - {json.dumps(host)}" for host in hosts)]
     if broad:
         lines += [
             "",
-            "# Also touched. Left commented out: each is a whole top-level directory, so",
-            "# granting one would undo most of the sandbox.",
+            "# Also touched, but each is a whole top-level directory. Uncomment only if needed.",
             *("#" + _bind_line(b) for b in broad),
         ]
     return "\n".join(lines) + "\n"
@@ -234,8 +237,7 @@ def widen(request: SandboxRequest) -> SandboxRequest:
     return replace(
         request,
         profiles=[*request.profiles, AUDIT_PROFILE],
-        binds=list(request.binds),
-        network="proxy",  # inline: from the profile it would lose to +untrusted's 'none'
+        network="proxy",  # Set inline because the profile's 'proxy' would lose to +untrusted's 'none'.
     )
 
 
@@ -243,17 +245,14 @@ def _traced(request: SandboxRequest, trace_file: Path) -> SandboxRequest:
     return replace(
         request,
         binds=[*request.binds, Bind(source=str(trace_file.parent), mode="rw")],
-        command=[_check_strace(), *_STRACE_FLAGS, "-o", str(trace_file), *request.command],
+        command=[_strace_path(), *_STRACE_FLAGS, "-o", str(trace_file), *request.command],
     )
 
 
-def _check_strace() -> str:
+def _strace_path() -> str:
     strace = shutil.which("strace")
     if strace is None:
-        raise HozoError(
-            "audit needs 'strace' to see filesystem access, and it isn't installed.\n"
-            "Or audit egress only: hozo audit --network-only ..."
-        )
+        raise HozoError("strace is not installed. Install it, or audit egress only with: hozo audit --network-only ...")
     return strace
 
 
@@ -265,33 +264,19 @@ class _ConnectSink(logging.Handler):
         self.hosts: Counter = Counter()
 
     def emit(self, record: logging.LogRecord) -> None:
-        if not isinstance(record.msg, str) or not record.msg.startswith(self._OUTCOMES):
-            return
-        if isinstance(record.args, tuple) and len(record.args) >= 2:
+        if record.msg.startswith(self._OUTCOMES):
             self.hosts[f"{record.args[0]}:{record.args[1]}"] += 1
 
 
 @contextmanager
 def _connect_sink():
     sink = _ConnectSink()
-    logger = logging.getLogger("hozo.proxy")
     logger.setLevel(logging.INFO)
     logger.addHandler(sink)
     try:
         yield sink
     finally:
         logger.removeHandler(sink)
-
-
-@contextmanager
-def _trace_workspace():
-    base = state_dir() / "audit"
-    base.mkdir(parents=True, exist_ok=True)
-    workdir = Path(tempfile.mkdtemp(prefix="audit-", dir=base))
-    try:
-        yield workdir
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def run_audit(
@@ -308,8 +293,12 @@ def run_audit(
         sink = stack.enter_context(_connect_sink())
         trace_file = None
         if report.traced:
-            workdir = stack.enter_context(_trace_workspace())
-            trace_file = workdir / "trace.log"
+            base = state_dir() / "audit"
+            base.mkdir(parents=True, exist_ok=True)
+            workdir = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="audit-", dir=base, ignore_cleanup_errors=True)
+            )
+            trace_file = Path(workdir) / "trace.log"
             run_request = _traced(run_request, trace_file)
 
         report.returncode = SandboxRunner().run(resolve_policy(run_request), environ=environ).returncode

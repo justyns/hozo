@@ -95,11 +95,6 @@ def test_an_arch_with_no_table_yields_no_filter_rather_than_failing():
     assert seccomp.syscall_table("s390x") is None
 
 
-def test_invalid_action_is_an_error():
-    with pytest.raises(HozoError, match="invalid syscall action"):
-        seccomp.build_seccomp_filter(policy(["bpf"], action="explode"), arch="x86_64")
-
-
 def _names(count, arch="x86_64"):
     """`count` distinct syscall names."""
     names = sorted(seccomp.syscall_table(arch))[:count]

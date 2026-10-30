@@ -1,12 +1,5 @@
-"""Hozo exception hierarchy.
-
-One base (``HozoError``) with two specific subclasses. Other failures raise
-``HozoError`` directly — we don't add a class per failure mode.
-"""
-
-
 class HozoError(Exception):
-    """Base for all Hozo errors."""
+    pass
 
 
 class ProfileError(HozoError):
